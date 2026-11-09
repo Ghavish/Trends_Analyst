@@ -9,6 +9,12 @@
 trading-ig==0.0.25          # brings lightstreamer-client-lib==1.0.3 for streaming
 python-dotenv==1.2.4        # reads credentials from .env
 
+# --- Historical data (fetch_data.py only) ---
+dukascopy-python==6.0.0     # Dukascopy downloader (MIT). 6.0.0 = 5.0.0 plus two fixes: 5.0.0 fails to
+                            # import on Python < 3.14 and rounds 1-minute candle opens to whole numbers
+requests==2.34.2            # HTTP (used directly for throttling/retries; also needed by the two above)
+urllib3==2.8.0              # retry rules for requests
+
 # --- Data ---
 pandas==3.1.1               # installed separately: trading-ig's optional "pandas" extra asks for <3,
                             # but trading-ig 0.0.25's own code handles pandas 3
@@ -24,4 +30,4 @@ plotly==7.1.0               # dashboard charts
 # --- Tests ---
 pytest==9.2.0
 
-# Phase 2 (added later, not needed yet): lightgbm, scikit-learn
+# Phase 2, later steps (not needed yet): lightgbm, scikit-learn

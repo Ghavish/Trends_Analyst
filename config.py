@@ -7,6 +7,7 @@ Credentials (IG username, password, API key) are NOT here. They live in the
 Everything in this file is safe to commit.
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 # --------------------------------------------------------------------------
@@ -171,6 +172,93 @@ QUIET_GAP_MINUTES = {
 # Our interpretation: only these mean "open, prices should be moving".
 # Every status change is logged, so this can be checked against real data.
 MARKET_OPEN_DLG_FLAGS = ("DEAL", "DEALNOEDIT")
+
+# --------------------------------------------------------------------------
+# Historical data from Dukascopy (Phase 2, step 1; fetch_data.py)
+# --------------------------------------------------------------------------
+# Downloaded with the dukascopy-python library (pinned in requirements.txt).
+# Only fetch_data.py uses that library. It calls Dukascopy's web-chart data
+# endpoints, which are NOT an official, documented API: they can change or
+# be blocked at any time.
+DUKASCOPY_DIR = DATA_DIR / "dukascopy"
+# Ticks, one file per instrument per UTC day: ticks/<INSTRUMENT>/<YYYY-MM-DD>.parquet
+#   columns: time_utc, bid, offer, bid_volume, offer_volume
+DUKASCOPY_TICKS_DIR = DUKASCOPY_DIR / "ticks"
+# 1-minute bid/offer bars built from those ticks, one file per UTC month:
+#   bars_1m/<INSTRUMENT>/<YYYY-MM>.parquet  (same columns as the IG bars)
+DUKASCOPY_BARS_1M_DIR = DUKASCOPY_DIR / "bars_1m"
+
+# Dukascopy's code for each instrument, as listed in dukascopy-python 6.0.0's
+# instrument table (dukascopy_python.instruments). Dukascopy files both
+# indices under its "IDX_CASH" group; whether they match IG's Cash prices is
+# checked by comparing them with the IG bars you record (not yet proven).
+DUKASCOPY_SYMBOLS = {
+    "EURUSD": "EUR-USD",
+    "GBPUSD": "GBP-USD",
+    "USDJPY": "USD-JPY",
+    "US500": "USA500.IDX-USD",     # "US 500 Index"
+    "GER40": "DEU.IDX-EUR",        # "Germany 40 Index" (quoted in EUR at Dukascopy)
+}
+
+# First day downloaded (you chose 2019; the pilot shows whether 2015 is worth adding).
+HISTORY_START_UTC = datetime(2019, 1, 1, tzinfo=timezone.utc)
+
+# Dukascopy may publish recent hours late, and an hour that isn't published
+# yet looks the same as an hour with no trading. So days newer than this are
+# not downloaded (otherwise they could be stored as complete while missing data).
+DUKASCOPY_LAG_DAYS = 3
+
+# Which of dukascopy-python's two data feeds to use: 2 = jetta.dukascopy.com
+# (one request per hour of ticks, bid/ask labelled by name), 1 = freeserv
+# chart feed. Both are undocumented; 2 is tried first, 1 is the fallback.
+DUKASCOPY_FEED_VERSION = 2
+
+# Being polite to Dukascopy's servers (no published limits exist):
+DUKASCOPY_MIN_SECONDS_BETWEEN_REQUESTS = 1.0  # at most one request per second
+DUKASCOPY_REQUEST_TIMEOUT_SECONDS = 30        # give up on a request after this long
+DUKASCOPY_HTTP_RETRIES = 4                    # retries on 429 / 5xx / network errors (inside requests),
+DUKASCOPY_RETRY_BACKOFF_SECONDS = 2.0         # waiting 0, 4, 8, 16 s (or as long as the server asks)
+DUKASCOPY_STOP_AFTER_FAILED_DAYS = 3          # stop the run after this many days in a row fail
+                                              # (a day fails at its first hour that fails after retries)
+
+# Hours that are never requested because these markets are closed: from
+# Saturday 00:00 UTC up to Sunday 20:00 UTC. (Forex reopens at 17:00 New York
+# = 21:00 or 22:00 UTC on Sunday; Dukascopy lists its index CFDs as opening
+# on Sunday evening too.) The pilot downloads every hour of one week, so you
+# can check that no ticks fall inside this window before it is relied on.
+DUKASCOPY_SKIP_FROM = (5, 0)    # (weekday, hour) UTC; Monday = 0, so 5 = Saturday
+DUKASCOPY_SKIP_UNTIL = (6, 20)  # Sunday 20:00 UTC (not included in the skip)
+
+# The pilot: every hour of one week for all five instruments, to check that
+# downloads work and to measure time and disk space before the bulk download.
+# Chosen inside the development period (not the final-check period below).
+PILOT_START_UTC = datetime(2026, 3, 2, tzinfo=timezone.utc)   # Monday
+PILOT_END_UTC = datetime(2026, 3, 9, tzinfo=timezone.utc)     # next Monday (not included)
+
+# --------------------------------------------------------------------------
+# Final-check period (Section 7.9) - looked at ONCE, at the very end
+# --------------------------------------------------------------------------
+# The most recent 6 complete months before this step (decided 9 Nov 2026).
+# These dates are FIXED: don't move them later to make room for more data.
+# fetch_data.load_history_1m() refuses to return any bar in this period
+# (or in the gap day before it) unless the purpose is the final evaluation,
+# and every final-evaluation read is logged in the database.
+FINAL_CHECK_START_UTC = datetime(2026, 5, 1, tzinfo=timezone.utc)
+FINAL_CHECK_END_UTC = datetime(2026, 11, 1, tzinfo=timezone.utc)   # not included
+# Gap between development data and the final check, so that no trade
+# outcome leaks across the boundary (Section 7.9, "at least a one-day gap").
+FINAL_CHECK_GAP_DAYS = 1
+
+# Instruments whose Dukascopy history may be used to build the model.
+# The indices stay out until the comparison with IG's own prices is done
+# (you decided this on 9 Nov 2026). They are still downloaded.
+HISTORY_APPROVED_FOR_MODEL = {
+    "EURUSD": True,
+    "GBPUSD": True,
+    "USDJPY": True,
+    "US500": False,
+    "GER40": False,
+}
 
 # --------------------------------------------------------------------------
 # Engine (signals.py)

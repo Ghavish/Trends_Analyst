@@ -15,7 +15,7 @@ truth. Personal use only; nothing here is financial advice.
 | `timeutils.py` | All time-zone conversions: UTC storage, market-local sessions, MUT + UTC display, trading day (17:00 New York) |
 | `broker.py` | The only file that talks to IG (login, streaming, reconnection; orders later) |
 | `db.py` | The only file that talks to SQLite |
-| `fetch_data.py` | Records the live IG feed; downloads history later |
+| `fetch_data.py` | Records the live IG feed; downloads Dukascopy history; the final-check lock |
 | `features.py`, `labels.py`, `train.py`, `backtest.py` | Model pipeline (Phase 2) |
 | `signals.py` | The engine (background process) |
 | `app.py` | The dashboard (Streamlit) |
@@ -106,6 +106,39 @@ It records all five instruments to `data/ticks/<INSTRUMENT>/<YYYY-MM-DD>.parquet
 UTC midnight, logs gaps and market status to the database, and writes its log
 to `logs/engine.log`. Make sure Windows syncs the clock automatically
 (Settings > Time & language > Date & time > Set time automatically).
+
+## Historical data (Dukascopy)
+
+History comes from Dukascopy through the `dukascopy-python` library (pinned to
+6.0.0). It uses Dukascopy's web-chart data feeds, which are **not an official
+API**: they may change or block scripted downloads. Requests are throttled to
+one per second, and a run stops by itself if Dukascopy refuses them.
+
+```powershell
+python fetch_data.py pilot      # 1) every hour of 2-8 Mar 2026, all five instruments, then a report
+python fetch_data.py download   # 2) everything since 2019-01-01 (after the pilot is checked)
+python fetch_data.py status     # what has been downloaded
+```
+
+* Stored in UTC: ticks in `data/dukascopy/ticks/<INSTRUMENT>/<YYYY-MM-DD>.parquet`,
+  1-minute bars (same columns as the IG bars, labelled by start time) in
+  `data/dukascopy/bars_1m/<INSTRUMENT>/<YYYY-MM>.parquet`.
+* Resumable: a day counts as done only when all its hours downloaded; Ctrl+C
+  is safe and the same command continues. Finished days are never fetched again.
+* Saturday and Sunday before 20:00 UTC are not requested (markets closed);
+  the pilot downloads those hours too, to check the rule.
+* The newest 3 days are left out (Dukascopy may still be completing them).
+* Options: `--instruments EURUSD GBPUSD`, `--from 2026-11-01`, `--to 2026-11-06`
+  (day after the last), `--feed 1` (the library's other feed, if feed 2 fails).
+  Log: `logs/history.log`.
+
+**Final-check period** (Section 7.9): 1 May 2026 to 31 Oct 2026, fixed in
+`config.py`. The model pipeline reads history only through
+`fetch_data.load_history_1m()`, which refuses that period (and the day before
+it) unless the purpose is the final evaluation; every such read is logged.
+The indices (US 500, Germany 40) are downloaded but kept out of the model
+until the comparison with IG's own prices is done
+(`config.HISTORY_APPROVED_FOR_MODEL`).
 
 ## Dashboard
 

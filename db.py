@@ -25,6 +25,8 @@ Tables:
   market_status_log every change of IG's market status (DLG_FLAG)
   engine_status     engine heartbeat and stream status (is the engine running?)
   market_info       contract details from IG (pip size, decimals, min deal ...)
+  history_days      which instrument-days of history are fully downloaded (resume)
+  final_check_access every read of the final-check period (Section 7.9)
 
 Price bars are NOT here: they are stored in Parquet files (fetch_data.py).
 
@@ -222,6 +224,36 @@ MIGRATIONS = [
         min_deal_size      REAL,
         min_stop_distance  REAL,
         updated_utc        TEXT NOT NULL
+    );
+    """,
+    # ---- version 4: historical downloads and the final-check log (Phase 2, step 1) ----
+    """
+    -- One row per instrument-day that has been downloaded completely (every
+    -- hour fetched without error). Used to skip finished days when a download
+    -- is restarted. A day with no ticks at all (e.g. a holiday) is also DONE.
+    CREATE TABLE history_days (
+        source            TEXT NOT NULL,          -- 'dukascopy'
+        instrument        TEXT NOT NULL,
+        day               TEXT NOT NULL,          -- UTC date, YYYY-MM-DD
+        tick_count        INTEGER NOT NULL,
+        hours_requested   INTEGER NOT NULL,
+        hours_empty       INTEGER NOT NULL,       -- requested hours that returned no ticks
+        hours_skipped     INTEGER NOT NULL,       -- weekend hours not requested
+        requests          INTEGER NOT NULL,       -- HTTP requests made (incl. retries we saw)
+        seconds           REAL NOT NULL,          -- time taken, including throttling
+        file_bytes        INTEGER NOT NULL,       -- size of the tick file (0 if none)
+        feed_version      INTEGER,
+        completed_utc     TEXT NOT NULL,
+        PRIMARY KEY (source, instrument, day)
+    );
+
+    -- Every time data from the final-check period is read (Section 7.9: it
+    -- should be looked at once, at the end).
+    CREATE TABLE final_check_access (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        time_utc     TEXT NOT NULL,
+        instruments  TEXT NOT NULL,
+        reason       TEXT NOT NULL
     );
     """,
 ]
@@ -844,3 +876,65 @@ def get_market_info() -> dict[str, dict]:
     with _conn() as conn:
         rows = conn.execute("SELECT * FROM market_info").fetchall()
     return {r["instrument"]: {**dict(r), "updated_utc": _dt(r["updated_utc"])} for r in rows}
+
+
+# --------------------------------------------------------------------------
+# Historical downloads (fetch_data.py) and the final-check log
+# --------------------------------------------------------------------------
+def mark_history_day_done(source: str, instrument: str, day, stats: dict,
+                          now: datetime | None = None) -> None:
+    """
+    Record that one instrument-day has been downloaded completely.
+    stats: tick_count, hours_requested, hours_empty, hours_skipped, requests,
+    seconds, file_bytes, feed_version. Re-downloading a day replaces its row.
+    """
+    with _conn() as conn, conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO history_days (source, instrument, day, tick_count, "
+            "hours_requested, hours_empty, hours_skipped, requests, seconds, file_bytes, "
+            "feed_version, completed_utc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (source, instrument, day.isoformat(), int(stats["tick_count"]),
+             int(stats["hours_requested"]), int(stats["hours_empty"]), int(stats["hours_skipped"]),
+             int(stats["requests"]), float(stats["seconds"]), int(stats["file_bytes"]),
+             stats.get("feed_version"), _ts(now or timeutils.now_utc())),
+        )
+
+
+def get_history_days(source: str, instrument: str | None = None,
+                     start_day=None, end_day=None) -> list[dict]:
+    """Downloaded days, oldest first. start_day included, end_day not included."""
+    sql = "SELECT * FROM history_days WHERE source = ?"
+    args: list = [source]
+    if instrument is not None:
+        sql += " AND instrument = ?"
+        args.append(instrument)
+    if start_day is not None:
+        sql += " AND day >= ?"
+        args.append(start_day.isoformat())
+    if end_day is not None:
+        sql += " AND day < ?"
+        args.append(end_day.isoformat())
+    sql += " ORDER BY instrument, day"
+    with _conn() as conn:
+        rows = conn.execute(sql, args).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["day"] = datetime.strptime(d["day"], "%Y-%m-%d").date()
+        d["completed_utc"] = _dt(d["completed_utc"])
+        out.append(d)
+    return out
+
+
+def log_final_check_access(instruments: list[str], reason: str,
+                           now: datetime | None = None) -> None:
+    reason = _check_reason(reason)
+    with _conn() as conn, conn:
+        conn.execute("INSERT INTO final_check_access (time_utc, instruments, reason) VALUES (?, ?, ?)",
+                     (_ts(now or timeutils.now_utc()), ",".join(instruments), reason))
+
+
+def list_final_check_access() -> list[dict]:
+    with _conn() as conn:
+        rows = conn.execute("SELECT * FROM final_check_access ORDER BY id").fetchall()
+    return [{**dict(r), "time_utc": _dt(r["time_utc"])} for r in rows]
