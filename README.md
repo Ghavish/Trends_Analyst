@@ -22,6 +22,7 @@ truth. Personal use only; nothing here is financial advice.
 | `display.py` | Plain wording and price/spread formats used on screen (and later in alerts) |
 | `test_connection.py` | Checks the IG demo connection, shows live EUR/USD |
 | `killswitch.py` | Command-line kill switch |
+| `backup.py` | Weekly backup of the IG recordings and the database to another drive |
 | `tests/` | Automated tests (`python -m pytest`) |
 
 `data/`, `models/`, `logs/`, the SQLite database and `.env` stay on your
@@ -152,6 +153,32 @@ it) unless the purpose is the final evaluation; every such read is logged.
 The indices (US 500, Germany 40) are downloaded but kept out of the model
 until the comparison with IG's own prices is done
 (`config.HISTORY_APPROVED_FOR_MODEL`).
+
+## Weekly backup (IG recordings and database)
+
+The IG recordings can't be downloaded again. Once, add the backup folder to
+`.env` (**no quotes**) and create it:
+
+```powershell
+# in .env:  BACKUP_DIR=D:\TrendsAnalyst\backups
+New-Item -ItemType Directory "D:\TrendsAnalyst\backups"
+```
+
+Then weekly (the engine can keep running):
+
+```powershell
+python backup.py          # database snapshot + new/changed IG recording files
+python backup.py --list   # what is in the backup folder
+```
+
+* The database is copied with SQLite's backup API (a consistent snapshot even
+  while the engine writes), checked for integrity, and saved as
+  `database\trends_analyst_<date_time>UTC.db`; the newest 8 are kept.
+* IG recordings are mirrored to `ig_recordings\ticks` and `ig_recordings\bars_1m`.
+  Nothing is ever deleted from the backup, and a finished day that changed on
+  the laptop is saved next to the backup copy, never over it.
+* If the drive is missing, it stops with a message instead of writing elsewhere.
+* Not included: Dukascopy history (can be downloaded again) and models (can be retrained).
 
 ## Dashboard
 

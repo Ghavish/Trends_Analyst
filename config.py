@@ -287,6 +287,23 @@ HISTORY_APPROVED_FOR_MODEL = {
 }
 
 # --------------------------------------------------------------------------
+# Backups (backup.py) - run weekly by you
+# --------------------------------------------------------------------------
+# The IG recordings can't be downloaded again, so backup.py copies them and
+# the SQLite database to another drive. Set the folder in .env, without
+# quotes, e.g.  BACKUP_DIR=D:\TrendsAnalyst\backups  (it must already exist;
+# if the drive is missing, the backup stops instead of writing elsewhere).
+_backup_setting = _setting_from_env_file("BACKUP_DIR")
+BACKUP_DIR = (PROJECT_ROOT / _backup_setting) if _backup_setting else None
+# How many dated copies of the database to keep (8 = about two months of weekly backups).
+BACKUP_KEEP_DB_COPIES = 8
+# IG recording files from the last this-many UTC days are still being written
+# by the engine, so a changed file simply replaces its backup. An OLDER file
+# that has changed is unexpected (it should be final): the backup copy is
+# kept and the new version is saved next to it, so nothing is ever lost.
+BACKUP_LIVE_DAYS = 2
+
+# --------------------------------------------------------------------------
 # Engine (signals.py)
 # --------------------------------------------------------------------------
 ENGINE_JOB_POLL_SECONDS = 5          # how often dashboard requests are picked up

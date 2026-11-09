@@ -12,6 +12,8 @@ Who may call what:
   * killswitch.py (command line): set_kill_switch / clear_kill_switch /
     clear_halt, so the kill switch works even if the dashboard is down.
   * engine: everything.
+  * backup.py: backup_database() only.
+  * fetch_data.py history download: the history_days / final_check_access functions.
 
 Tables:
   flags             KILL_SWITCH (manual) and HALT (automatic) - each on/off
@@ -938,3 +940,31 @@ def list_final_check_access() -> list[dict]:
     with _conn() as conn:
         rows = conn.execute("SELECT * FROM final_check_access ORDER BY id").fetchall()
     return [{**dict(r), "time_utc": _dt(r["time_utc"])} for r in rows]
+
+
+# --------------------------------------------------------------------------
+# Backup (backup.py)
+# --------------------------------------------------------------------------
+def backup_database(dest: Path) -> dict:
+    """
+    Copy the database to `dest` with SQLite's online backup API: a consistent
+    snapshot even while the engine is writing (a plain file copy of a WAL
+    database can miss recent changes or catch a half-written page). The copy
+    is written to a temporary file, checked with PRAGMA integrity_check, and
+    only then renamed to `dest`. Returns {"bytes", "integrity", "schema_version"}.
+    """
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".tmp")
+    if tmp.exists():
+        tmp.unlink()
+    with _conn() as src, closing(sqlite3.connect(tmp)) as dst:
+        src.backup(dst)
+        dst.execute("PRAGMA journal_mode = DELETE")    # one self-contained file, no -wal/-shm
+        integrity = dst.execute("PRAGMA integrity_check").fetchone()[0]
+        version = dst.execute("PRAGMA user_version").fetchone()[0]
+    if integrity != "ok":
+        tmp.unlink()
+        raise DBError(f"backup copy failed its integrity check: {integrity}")
+    tmp.replace(dest)
+    return {"bytes": dest.stat().st_size, "integrity": integrity, "schema_version": version}
