@@ -141,11 +141,24 @@ class DualTimeFormatter(logging.Formatter):
         return fmt_dual(ts, with_date=True, seconds=True)
 
 
-def configure_logging(level: int = logging.INFO) -> None:
-    """Send log messages to the console with UTC + MUT timestamps."""
-    handler = logging.StreamHandler()
-    handler.setFormatter(DualTimeFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+def configure_logging(level: int = logging.INFO, log_file=None) -> None:
+    """
+    Send log messages to the console with UTC + MUT timestamps, and also to
+    `log_file` if given (a new file each UTC day, the last 30 kept).
+    """
+    from logging.handlers import TimedRotatingFileHandler
+    from pathlib import Path
+
+    fmt = DualTimeFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_file is not None:
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(TimedRotatingFileHandler(log_file, when="midnight", utc=True,
+                                                 backupCount=30, encoding="utf-8"))
+    for h in handlers:
+        h.setFormatter(fmt)
     root = logging.getLogger()
-    root.handlers[:] = [handler]
+    root.handlers[:] = handlers
     root.setLevel(level)
+    logging.getLogger("apscheduler").setLevel(logging.WARNING)  # its per-run messages are noise
     logging.getLogger("trading_ig").setLevel(logging.WARNING)   # never log usernames

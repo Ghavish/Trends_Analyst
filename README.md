@@ -93,3 +93,15 @@ python killswitch.py off --reason "checked"       # resume (type YES to confirm)
 python killswitch.py clear-halt --reason "fixed"  # clear an automatic halt (type YES)
 python killswitch.py log                          # every activation: time, reason, source
 ```
+
+## Recording prices (the engine)
+
+```powershell
+python signals.py      # runs until Ctrl+C; the laptop must stay on
+```
+
+It records all five instruments to `data/ticks/<INSTRUMENT>/<YYYY-MM-DD>.parquet`
+(every price update) and `data/bars_1m/...` (complete 1-minute bars), split at
+UTC midnight, logs gaps and market status to the database, and writes its log
+to `logs/engine.log`. Make sure Windows syncs the clock automatically
+(Settings > Time & language > Date & time > Set time automatically).

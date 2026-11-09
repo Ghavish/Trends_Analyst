@@ -37,6 +37,7 @@ import time
 
 import broker
 import config
+import db
 import timeutils
 
 MAX_SEARCH_ROWS = 12   # rows shown per instrument search
@@ -150,7 +151,7 @@ def fmt_tick_time(ts) -> str:
 
 SHOWN_EVENTS = {"connecting", "status", "reconnect_needed", "reconnecting", "reconnected",
                 "reconnect_failed", "server_error", "subscription_error", "lost_updates",
-                "fatal", "test", "bad_update"}
+                "fatal", "test", "bad_update", "market_status_error"}
 
 
 def pip_size(market: dict) -> float | None:
@@ -189,10 +190,17 @@ def stream_prices(b: broker.Broker, epic: str, seconds: int, drop_after: int | N
         if kind in SHOWN_EVENTS:
             print(f"  [{kind}] {detail}")
 
+    statuses = []
+
+    def on_market_status(epic: str, status: str, when) -> None:
+        statuses.append(status)
+        print(f"  [market status] {epic}: {status}  (IG time {timeutils.fmt_dual(when, with_date=True, seconds=True)})")
+
     print(f"  Streaming {epic} for {seconds} s"
           + (f", dropping the connection on purpose after {drop_after} s" if drop_after else "")
           + "  (Ctrl+C to stop early)")
-    stream = broker.PriceStream(b, [epic], on_tick=on_tick, on_event=on_event)
+    stream = broker.PriceStream(b, [epic], on_tick=on_tick, on_event=on_event,
+                                on_market_status=on_market_status)
     stream.start()
     started = time.monotonic()
     dropped = False
@@ -220,6 +228,11 @@ def stream_prices(b: broker.Broker, epic: str, seconds: int, drop_after: int | N
         print(f"    Delay IG time -> laptop: median {median:.0f} ms, min {ordered[0]:.0f}, max {ordered[-1]:.0f}")
         print("      (a few hundred ms is normal; HOURS would mean a time-zone problem;")
         print("       negative means the laptop clock is behind - Windows: Settings > Time > Sync now)")
+    if statuses:
+        print(f"    Market status (DLG_FLAG): {' -> '.join(statuses)}   (PRICE subscription works)")
+    else:
+        print(f"    Market status (DLG_FLAG): none received"
+              f"{' - ' + stream.market_status_error if stream.market_status_error else ''}")
     if health["last_error"]:
         print(f"    Last error             : {health['last_error']}")
     print(f"    Automatic-halt check   : {halt or 'OK (no halt condition)'}")
@@ -239,6 +252,8 @@ def main() -> int:
     parser.add_argument("--seconds", type=int, default=60, help="how long to stream (default 60)")
     parser.add_argument("--simulate-drop", action="store_true",
                         help="drop the stream after 15 s to test automatic reconnection")
+    parser.add_argument("--force", action="store_true",
+                        help="stream even if the engine's heartbeat looks recent")
     parser.add_argument("--debug", action="store_true", help="show detailed log messages")
     args = parser.parse_args()
 
@@ -253,6 +268,13 @@ def main() -> int:
         print("[1] Reading .env ...")
         creds = broker.load_credentials()
         print(f"  OK: IG_ACC_TYPE={creds['acc_type']}, API key {broker.mask(creds['api_key'], 4)}")
+
+        if db.engine_is_running() and not args.force:
+            # Checked before logging in: IG's docs don't say whether a second
+            # login affects the engine's session, and only one stream is allowed.
+            print("  The engine (signals.py) is running. Stop it first (Ctrl+C in its window),")
+            print("  or add --force if you are sure it is not.")
+            return 1
 
         print("[2] Logging in ...")
         b = broker.Broker(creds)

@@ -138,3 +138,45 @@ STREAM_RECOVERY_GRACE_SECONDS = 60
 STREAM_CONNECT_TIMEOUT_SECONDS = 30
 # Waits before successive reconnection attempts (the last value repeats).
 STREAM_RECONNECT_DELAYS_SECONDS = (5, 10, 20, 40, 60)
+
+# --------------------------------------------------------------------------
+# Price recording (fetch_data.py, run by the engine signals.py)
+# --------------------------------------------------------------------------
+TICKS_DIR = DATA_DIR / "ticks"        # raw price updates: ticks/<INSTRUMENT>/<YYYY-MM-DD>.parquet
+BARS_1M_DIR = DATA_DIR / "bars_1m"    # 1-minute bars:    bars_1m/<INSTRUMENT>/<YYYY-MM-DD>.parquet
+# Files are split at UTC midnight. (The trading day for the daily loss limit
+# is separate: it resets at 17:00 New York, see TRADING_DAY_RESET_*.)
+
+# How often the day's files are rewritten (at most this much is lost in a crash).
+RECORDER_FLUSH_SECONDS = 60
+
+# A 1-minute bar labelled 10:00 covers [10:00:00, 10:01:00) and is only
+# complete at 10:01. It is written to file only after this extra grace period,
+# so a price that arrives a moment late still lands in the right bar.
+BAR_CLOSE_GRACE_SECONDS = 2
+
+# "Quiet" gap: no price update for this many minutes while IG reports the
+# market as open. Logged as a possible gap (could be a genuine lull).
+QUIET_GAP_MINUTES = {
+    "EURUSD": 5,
+    "GBPUSD": 5,
+    "USDJPY": 5,
+    "US500": 5,
+    "GER40": 5,
+}
+
+# Market status comes from IG's PRICE subscription field DLG_FLAG. IG's
+# reference lists the values CLOSED, CALL, DEAL, EDIT, CLOSINGSONLY,
+# DEALNOEDIT, AUCTION, AUCTIONNOEDIT, SUSPEND but does not define them.
+# Our interpretation: only these mean "open, prices should be moving".
+# Every status change is logged, so this can be checked against real data.
+MARKET_OPEN_DLG_FLAGS = ("DEAL", "DEALNOEDIT")
+
+# --------------------------------------------------------------------------
+# Engine (signals.py)
+# --------------------------------------------------------------------------
+ENGINE_JOB_POLL_SECONDS = 5          # how often dashboard requests are picked up
+ENGINE_HALT_CHECK_SECONDS = 60       # how often the automatic-halt rules are checked
+# The engine writes a heartbeat; if it is older than this, the engine is
+# considered not running (used by the dashboard and test_connection.py).
+ENGINE_HEARTBEAT_STALE_SECONDS = 180

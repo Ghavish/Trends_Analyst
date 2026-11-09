@@ -52,7 +52,9 @@ from trading_ig import IGService  # noqa: E402  (must come after the filter abov
 from trading_ig.rest import ApiExceededException, TokenInvalidException  # noqa: E402
 from trading_ig.streamer.ticker import TickerSubscription  # noqa: E402
 # The Lightstreamer client library that trading-ig itself uses for streaming.
-from lightstreamer.client import ClientListener, LightstreamerClient, SubscriptionListener  # noqa: E402
+from lightstreamer.client import (  # noqa: E402
+    ClientListener, LightstreamerClient, Subscription, SubscriptionListener,
+)
 
 import config
 import timeutils
@@ -570,6 +572,21 @@ class Broker:
 
 TICK_FIELDS_USED = ("BID", "OFR", "UTM")
 
+# Market status (open / closed). The tick feed has no market-state field, so
+# a separate subscription is used, per IG's Streaming API reference (checked
+# 9 Nov 2026): item PRICE:<account id>:<epic>, MERGE mode, data adapter
+# "Pricing", field DLG_FLAG (CLOSED, CALL, DEAL, EDIT, CLOSINGSONLY,
+# DEALNOEDIT, AUCTION, AUCTIONNOEDIT, SUSPEND) and TIMESTAMP (UTC millis).
+# (IG's older MARKET:<epic> subscription was decommissioned on 8 May 2026.)
+MARKET_STATUS_FIELDS = ("DLG_FLAG", "TIMESTAMP")
+
+
+def make_market_status_subscription(account_id: str, epic: str) -> Subscription:
+    sub = Subscription(mode="MERGE", items=[f"PRICE:{account_id}:{epic}"],
+                       fields=list(MARKET_STATUS_FIELDS))
+    sub.setDataAdapter("Pricing")
+    return sub
+
 
 @dataclass(frozen=True)
 class Tick:
@@ -618,6 +635,19 @@ class _TickEvents(SubscriptionListener):
         self._stream._on_lost_updates(self._gen, self._epic, lostUpdates)
 
 
+class _StatusEvents(SubscriptionListener):
+    """Passes market-status updates for one epic to the PriceStream."""
+
+    def __init__(self, stream: "PriceStream", generation: int, epic: str):
+        self._stream, self._gen, self._epic = stream, generation, epic
+
+    def onItemUpdate(self, update):
+        self._stream._on_status_update(self._gen, self._epic, update)
+
+    def onSubscriptionError(self, code, message):
+        self._stream._on_status_subscription_error(self._gen, self._epic, code, message)
+
+
 class PriceStream:
     """
     Live bid/offer prices for a list of epics, with automatic reconnection.
@@ -630,10 +660,13 @@ class PriceStream:
     on_tick(tick) is called for every price update, on Lightstreamer's own
     thread, so it must be quick (e.g. put the tick on a queue).
     on_event(kind, detail) reports connection events for logging/display.
+    on_market_status(epic, status, time_utc) - if given, IG's market status
+    (DLG_FLAG, e.g. DEAL / CLOSED) is subscribed to as well and reported here.
     """
 
-    def __init__(self, broker: "Broker", epics, on_tick, on_event=None,
-                 client_factory=None, subscription_factory=None, clock=time.monotonic):
+    def __init__(self, broker: "Broker", epics, on_tick, on_event=None, on_market_status=None,
+                 client_factory=None, subscription_factory=None, status_subscription_factory=None,
+                 clock=time.monotonic):
         self._broker = broker
         self._epics = list(epics)
         self._on_tick = on_tick
@@ -641,6 +674,10 @@ class PriceStream:
         # Replaceable in tests:
         self._client_factory = client_factory or (lambda endpoint: LightstreamerClient(endpoint, None))
         self._subscription_factory = subscription_factory or TickerSubscription
+        self._on_market_status = on_market_status
+        self._status_subscription_factory = status_subscription_factory or make_market_status_subscription
+        self.market_status: dict[str, str] = {}        # epic -> latest DLG_FLAG
+        self.market_status_error: str | None = None
         self._clock = clock
 
         self._lock = threading.RLock()
@@ -748,6 +785,11 @@ class PriceStream:
             sub = self._subscription_factory(epic)
             sub.addListener(_TickEvents(self, gen, epic))
             client.subscribe(sub)
+        if self._on_market_status is not None:
+            for epic in self._epics:
+                status_sub = self._status_subscription_factory(user, epic)
+                status_sub.addListener(_StatusEvents(self, gen, epic))
+                client.subscribe(status_sub)
         self._client = client
         self._need_reconnect = False
         self._attempt_started = self._clock()
@@ -910,9 +952,38 @@ class PriceStream:
         except Exception:
             log.exception("on_tick handler failed (tick dropped by handler, stream continues)")
 
+    def _on_status_update(self, gen: int, epic: str, update) -> None:
+        if gen != self._generation:
+            return
+        raw = update.getValue("DLG_FLAG")
+        if raw is None:
+            return
+        status = str(raw).strip().upper()          # IG pads some values, e.g. "CLOSED "
+        try:
+            when = timeutils.from_epoch_ms(update.getValue("TIMESTAMP"))
+        except (TypeError, ValueError):
+            when = timeutils.now_utc()
+        with self._lock:
+            changed = self.market_status.get(epic) != status
+            self.market_status[epic] = status
+        if changed:
+            self._emit("market_status", f"{epic}: {status}")
+            try:
+                self._on_market_status(epic, status, when)
+            except Exception:
+                log.exception("on_market_status handler failed (ignored)")
+
+    def _on_status_subscription_error(self, gen: int, epic: str, code, message) -> None:
+        if gen != self._generation:
+            return
+        # Prices keep flowing; only the open/closed information is missing.
+        self.market_status_error = f"market status for {epic} refused ({code}: {message})"
+        self._emit("market_status_error", self.market_status_error)
+
     def _emit(self, kind: str, detail: str) -> None:
         level = logging.WARNING if kind in ("server_error", "reconnect_failed", "fatal",
-                                            "subscription_error", "lost_updates") else logging.INFO
+                                            "subscription_error", "lost_updates",
+                                            "market_status_error") else logging.INFO
         log.log(level, "stream %s: %s", kind, detail)
         if self._on_event_cb is not None:
             try:

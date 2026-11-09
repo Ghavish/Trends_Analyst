@@ -13,13 +13,17 @@ Who may call what:
     clear_halt, so the kill switch works even if the dashboard is down.
   * engine: everything.
 
-Tables (schema version 1):
+Tables:
   flags             KILL_SWITCH (manual) and HALT (automatic) - each on/off
   flag_events       every activation / deactivation: time, reason, source
   jobs              requests from the dashboard; the engine updates progress/status
   variants          model variants and their live role: ACTIVE / SHADOW / OFF
   variant_role_log  every role change (Section 10.6 "Make active")
   predictions       every signal (active and shadow), with its outcome
+  gaps              periods with missing / possibly missing prices (step 5)
+  feed_status       latest price and market status per instrument (for the dashboard)
+  market_status_log every change of IG's market status (DLG_FLAG)
+  engine_status     engine heartbeat and stream status (is the engine running?)
 
 Price bars are NOT here: they are stored in Parquet files (fetch_data.py).
 
@@ -163,6 +167,44 @@ MIGRATIONS = [
     );
     CREATE INDEX predictions_open ON predictions (status);
     CREATE INDEX predictions_by_variant ON predictions (variant, bar_time_utc);
+    """,
+    # ---- version 2: price recording (Phase 1, step 5) ----
+    """
+    CREATE TABLE gaps (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        instrument   TEXT NOT NULL,
+        kind         TEXT NOT NULL CHECK (kind IN ('OUTAGE', 'QUIET', 'ENGINE_OFF')),
+        start_utc    TEXT NOT NULL,
+        end_utc      TEXT,                 -- NULL while the gap is still open
+        detail       TEXT
+    );
+    CREATE INDEX gaps_by_start ON gaps (start_utc);
+    CREATE INDEX gaps_open ON gaps (end_utc);
+
+    CREATE TABLE feed_status (
+        instrument         TEXT PRIMARY KEY,
+        epic               TEXT NOT NULL,
+        last_tick_utc      TEXT,
+        bid                REAL,
+        offer              REAL,
+        market_status      TEXT,           -- IG DLG_FLAG, e.g. DEAL / CLOSED
+        market_status_utc  TEXT,
+        ticks_today        INTEGER,
+        updated_utc        TEXT NOT NULL
+    );
+
+    CREATE TABLE market_status_log (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        time_utc    TEXT NOT NULL,
+        instrument  TEXT NOT NULL,
+        status      TEXT NOT NULL
+    );
+
+    CREATE TABLE engine_status (
+        key          TEXT PRIMARY KEY,     -- e.g. heartbeat, stream_status, state
+        value        TEXT,
+        updated_utc  TEXT NOT NULL
+    );
     """,
 ]
 
@@ -613,3 +655,137 @@ def list_predictions(since_utc: datetime | None = None, variant: str | None = No
     with _conn() as conn:
         rows = conn.execute(sql + " ORDER BY bar_time_utc DESC, id DESC LIMIT ?", args + [limit]).fetchall()
     return [_pred_dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------
+# Price feed: gaps, latest prices, market status, engine heartbeat
+# --------------------------------------------------------------------------
+GAP_KINDS = ("OUTAGE", "QUIET", "ENGINE_OFF")
+
+
+def _gap_dict(r):
+    d = dict(r)
+    d["start_utc"], d["end_utc"] = _dt(d["start_utc"]), _dt(d["end_utc"])
+    return d
+
+
+def open_gap(instrument: str, kind: str, start_utc: datetime, detail: str | None = None) -> int:
+    """Start a gap record (end unknown yet). Returns its id."""
+    if kind not in GAP_KINDS:
+        raise DBError(f"gap kind must be one of {GAP_KINDS}")
+    with _conn() as conn, conn:
+        return conn.execute(
+            "INSERT INTO gaps (instrument, kind, start_utc, detail) VALUES (?, ?, ?, ?)",
+            (instrument, kind, _ts(start_utc), detail),
+        ).lastrowid
+
+
+def close_gap(gap_id: int, end_utc: datetime, detail: str | None = None) -> None:
+    with _conn() as conn, conn:
+        conn.execute(
+            "UPDATE gaps SET end_utc = ?, detail = COALESCE(?, detail) WHERE id = ? AND end_utc IS NULL",
+            (_ts(end_utc), detail, gap_id),
+        )
+
+
+def add_closed_gap(instrument: str, kind: str, start_utc: datetime, end_utc: datetime,
+                   detail: str | None = None) -> int:
+    gap_id = open_gap(instrument, kind, start_utc, detail)
+    close_gap(gap_id, end_utc)
+    return gap_id
+
+
+def list_gaps(since_utc: datetime | None = None, open_only: bool = False, limit: int = 200) -> list[dict]:
+    """Newest first."""
+    sql, args = "SELECT * FROM gaps WHERE 1 = 1", []
+    if since_utc is not None:
+        sql += " AND (end_utc IS NULL OR end_utc >= ?)"
+        args.append(_ts(since_utc))
+    if open_only:
+        sql += " AND end_utc IS NULL"
+    with _conn() as conn:
+        rows = conn.execute(sql + " ORDER BY start_utc DESC, id DESC LIMIT ?", args + [limit]).fetchall()
+    return [_gap_dict(r) for r in rows]
+
+
+def close_all_open_gaps(end_utc: datetime, detail: str) -> int:
+    """Used when the engine stops: no gap stays open forever."""
+    with _conn() as conn, conn:
+        return conn.execute(
+            "UPDATE gaps SET end_utc = ?, detail = COALESCE(detail || '; ', '') || ? WHERE end_utc IS NULL",
+            (_ts(end_utc), detail),
+        ).rowcount
+
+
+def upsert_feed_status(rows: list[dict], now: datetime | None = None) -> None:
+    """rows: instrument, epic, last_tick_utc, bid, offer, market_status, market_status_utc, ticks_today."""
+    now_s = _ts(now or timeutils.now_utc())
+    with _conn() as conn, conn:
+        for r in rows:
+            conn.execute(
+                "INSERT INTO feed_status (instrument, epic, last_tick_utc, bid, offer, market_status, "
+                "market_status_utc, ticks_today, updated_utc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (instrument) DO UPDATE SET epic = excluded.epic, "
+                "last_tick_utc = excluded.last_tick_utc, bid = excluded.bid, offer = excluded.offer, "
+                "market_status = excluded.market_status, market_status_utc = excluded.market_status_utc, "
+                "ticks_today = excluded.ticks_today, updated_utc = excluded.updated_utc",
+                (r["instrument"], r["epic"], _ts(r.get("last_tick_utc")), r.get("bid"), r.get("offer"),
+                 r.get("market_status"), _ts(r.get("market_status_utc")), r.get("ticks_today"), now_s),
+            )
+
+
+def get_feed_status() -> list[dict]:
+    with _conn() as conn:
+        rows = conn.execute("SELECT * FROM feed_status ORDER BY instrument").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        for k in ("last_tick_utc", "market_status_utc", "updated_utc"):
+            d[k] = _dt(d[k])
+        out.append(d)
+    return out
+
+
+def log_market_status(instrument: str, status: str, time_utc: datetime) -> None:
+    with _conn() as conn, conn:
+        conn.execute("INSERT INTO market_status_log (time_utc, instrument, status) VALUES (?, ?, ?)",
+                     (_ts(time_utc), instrument, status))
+
+
+def list_market_status_log(limit: int = 100) -> list[dict]:
+    with _conn() as conn:
+        rows = conn.execute("SELECT * FROM market_status_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [{**dict(r), "time_utc": _dt(r["time_utc"])} for r in rows]
+
+
+def set_engine_status(values: dict, now: datetime | None = None) -> None:
+    """Store key/value pairs (values as text); 'heartbeat' is set to now as well."""
+    now_s = _ts(now or timeutils.now_utc())
+    values = {**values, "heartbeat": now_s}
+    with _conn() as conn, conn:
+        for key, value in values.items():
+            conn.execute(
+                "INSERT INTO engine_status (key, value, updated_utc) VALUES (?, ?, ?) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_utc = excluded.updated_utc",
+                (key, None if value is None else str(value), now_s),
+            )
+
+
+def get_engine_status() -> dict:
+    """{key: value}; 'heartbeat' is returned as a datetime."""
+    with _conn() as conn:
+        rows = conn.execute("SELECT key, value FROM engine_status").fetchall()
+    d = {r["key"]: r["value"] for r in rows}
+    if d.get("heartbeat"):
+        d["heartbeat"] = _dt(d["heartbeat"])
+    return d
+
+
+def engine_is_running(now: datetime | None = None) -> bool:
+    """True if the engine's heartbeat is recent and it has not reported stopping."""
+    status = get_engine_status()
+    hb = status.get("heartbeat")
+    if hb is None or status.get("state") == "stopped":
+        return False
+    age = ((now or timeutils.now_utc()) - hb).total_seconds()
+    return age <= config.ENGINE_HEARTBEAT_STALE_SECONDS
