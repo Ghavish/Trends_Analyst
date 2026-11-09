@@ -7,6 +7,7 @@ Credentials (IG username, password, API key) are NOT here. They live in the
 Everything in this file is safe to commit.
 """
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -181,11 +182,36 @@ MARKET_OPEN_DLG_FLAGS = ("DEAL", "DEALNOEDIT")
 # endpoints, which are NOT an official, documented API: they can change or
 # be blocked at any time.
 DUKASCOPY_DIR = DATA_DIR / "dukascopy"
-# Ticks, one file per instrument per UTC day: ticks/<INSTRUMENT>/<YYYY-MM-DD>.parquet
+# Ticks, one file per instrument per UTC day: <ticks folder>/<INSTRUMENT>/<YYYY-MM-DD>.parquet
 #   columns: time_utc, bid, offer, bid_volume, offer_volume
-DUKASCOPY_TICKS_DIR = DUKASCOPY_DIR / "ticks"
+# The ticks are large (~14 GB from 2019), so they may live on another drive:
+# put e.g.  DUKASCOPY_TICKS_DIR=D:\TrendsAnalyst\dukascopy\ticks  in .env
+# (a per-laptop setting, so it stays out of Git). That folder must already
+# exist: if the drive is unplugged or has another letter, downloads stop
+# instead of quietly writing somewhere else. Without the setting, ticks go to
+# data/dukascopy/ticks (created automatically).
+DUKASCOPY_TICKS_DIR_DEFAULT = DUKASCOPY_DIR / "ticks"
+
+
+def _setting_from_env_file(name: str) -> str | None:
+    """One non-secret setting from the environment or .env (nothing else is loaded)."""
+    value = os.environ.get(name)
+    if value is None:
+        env_file = PROJECT_ROOT / ".env"
+        if env_file.exists():
+            from dotenv import dotenv_values
+            value = dotenv_values(env_file).get(name)
+    value = (value or "").strip().strip('"').strip("'")
+    return value or None
+
+
+_ticks_setting = _setting_from_env_file("DUKASCOPY_TICKS_DIR")
+# True when the tick folder was chosen in .env (then it must exist already).
+DUKASCOPY_TICKS_DIR_FROM_ENV = _ticks_setting is not None
+DUKASCOPY_TICKS_DIR = (PROJECT_ROOT / _ticks_setting) if _ticks_setting else DUKASCOPY_TICKS_DIR_DEFAULT
 # 1-minute bid/offer bars built from those ticks, one file per UTC month:
-#   bars_1m/<INSTRUMENT>/<YYYY-MM>.parquet  (same columns as the IG bars)
+#   bars_1m/<INSTRUMENT>/<YYYY-MM>.parquet  (same columns as the IG bars).
+# They stay on the laptop, so training and backtests don't need the other drive.
 DUKASCOPY_BARS_1M_DIR = DUKASCOPY_DIR / "bars_1m"
 
 # Dukascopy's code for each instrument, as listed in dukascopy-python 6.0.0's

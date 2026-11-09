@@ -47,6 +47,7 @@ History from Dukascopy (command line, see the bottom of this file):
     python fetch_data.py pilot       # one week, all five instruments, then a report
     python fetch_data.py download    # everything from 2019 (resumable; Ctrl+C is safe)
     python fetch_data.py status      # what has been downloaded
+    python fetch_data.py move-ticks  # move ticks to the folder set in .env (DUKASCOPY_TICKS_DIR)
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ import argparse
 import json
 import logging
 import os
+import shutil
 import sys
 import threading
 import time
@@ -468,6 +470,10 @@ class HistoryAccessError(Exception):
     """A read of history that the final-check / approval rules don't allow."""
 
 
+class TicksFolderError(Exception):
+    """The tick folder can't be used (drive unplugged, other letter, bad setting)."""
+
+
 # --------------------------------------------------------------------------
 # Files and calendar
 # --------------------------------------------------------------------------
@@ -477,6 +483,27 @@ def history_tick_file(instrument: str, day: date) -> Path:
 
 def history_bar_file(instrument: str, year: int, month: int) -> Path:
     return config.DUKASCOPY_BARS_1M_DIR / instrument / f"{year:04d}-{month:02d}.parquet"
+
+
+def ticks_folder_problem() -> str | None:
+    """Why the tick folder can't be used right now, or None if it can."""
+    path = config.DUKASCOPY_TICKS_DIR
+    if any(ord(c) < 32 for c in str(path)):
+        # e.g. "D:\TrendsAnalyst\dukascopy\ticks" in double quotes: .env turns \t into a tab.
+        return (f"DUKASCOPY_TICKS_DIR in .env contains a hidden control character ({str(path)!r}). "
+                "Write the path without quotes, e.g. DUKASCOPY_TICKS_DIR=D:\\TrendsAnalyst\\dukascopy\\ticks")
+    if config.DUKASCOPY_TICKS_DIR_FROM_ENV and not path.is_dir():
+        return (f"The tick folder {path} (DUKASCOPY_TICKS_DIR in .env) can't be found. Is the drive "
+                "plugged in, with the same letter? If this is its first use, create the folder: "
+                f'New-Item -ItemType Directory "{path}"')
+    return None
+
+
+def require_ticks_folder() -> None:
+    """Stop (TicksFolderError) rather than read or write ticks in the wrong place."""
+    problem = ticks_folder_problem()
+    if problem:
+        raise TicksFolderError(problem)
 
 
 def is_skipped_hour(hour_start: datetime) -> bool:
@@ -667,6 +694,7 @@ def download_day(instrument: str, day: date, skip_closed: bool = True,
     day as done. If any hour fails, nothing is written or recorded (the whole
     day is tried again next time) and DukascopyError is raised.
     """
+    require_ticks_folder()
     started = time.monotonic()
     counter = _RequestCounter()
     frames, requested, empty, skipped = [], 0, 0, 0
@@ -714,6 +742,7 @@ def build_month_bars(instrument: str, year: int, month: int) -> int:
     Days are processed one at a time (a minute never spans two UTC days), so
     a busy month never has to fit in memory as ticks. Returns the bar count.
     """
+    require_ticks_folder()
     first = date(year, month, 1)
     after = date(year + (month == 12), month % 12 + 1, 1)
     parts = []
@@ -752,6 +781,7 @@ def download_history(instruments: list[str] | None = None, start: datetime | Non
     Stops early if Dukascopy blocks us or DUKASCOPY_STOP_AFTER_FAILED_DAYS
     days in a row fail. Safe to interrupt (Ctrl+C) and run again.
     """
+    require_ticks_folder()
     instruments = instruments or list(config.INSTRUMENTS)
     start = timeutils.ensure_utc(start or config.HISTORY_START_UTC)
     latest = default_history_end()
@@ -898,6 +928,7 @@ def _dir_bytes(path: Path) -> int:
 
 def pilot_report(instruments: list[str], start: datetime, end: datetime) -> list[str]:
     """Plain-text findings from the pilot week, and estimates for the full download."""
+    require_ticks_folder()
     lines: list[str] = []
     days = _days(start, end)
     full_start, full_end = config.HISTORY_START_UTC, default_history_end()
@@ -969,8 +1000,19 @@ def pilot_report(instruments: list[str], start: datetime, end: datetime) -> list
     return lines
 
 
+def missing_tick_files(instrument: str) -> list[date]:
+    """Downloaded days (with ticks) whose tick file can't be found."""
+    return [r["day"] for r in db.get_history_days(DUKASCOPY, instrument)
+            if r["tick_count"] > 0 and not history_tick_file(instrument, r["day"]).exists()]
+
+
 def history_status() -> list[str]:
     lines = []
+    problem = ticks_folder_problem()
+    where = "from .env" if config.DUKASCOPY_TICKS_DIR_FROM_ENV else "default"
+    lines.append(f"Tick files: {config.DUKASCOPY_TICKS_DIR} ({where})"
+                 + (f"  NOT REACHABLE: {problem}" if problem else ""))
+    lines.append(f"Bar files:  {config.DUKASCOPY_BARS_1M_DIR}")
     end = default_history_end()
     all_days = _days(config.HISTORY_START_UTC, end)
     for inst in config.INSTRUMENTS:
@@ -978,10 +1020,16 @@ def history_status() -> list[str]:
         in_range = {r["day"] for r in rows if config.HISTORY_START_UTC.date() <= r["day"] < end.date()}
         ticks = sum(r["tick_count"] for r in rows)
         approved = "approved for the model" if config.HISTORY_APPROVED_FOR_MODEL.get(inst) else "NOT approved for the model yet"
+        tick_mb = "?" if problem else f"{_dir_bytes(config.DUKASCOPY_TICKS_DIR / inst) / 1e6:,.0f}"
         lines.append(f"{inst:<7} {len(in_range):>5}/{len(all_days)} days since "
                      f"{config.HISTORY_START_UTC:%Y-%m-%d}, {ticks:,} ticks, "
-                     f"ticks {_dir_bytes(config.DUKASCOPY_TICKS_DIR / inst) / 1e6:,.0f} MB, "
-                     f"bars {_dir_bytes(config.DUKASCOPY_BARS_1M_DIR / inst) / 1e6:,.0f} MB  ({approved})")
+                     f"ticks {tick_mb} MB, "
+                     f"bars {_dir_bytes(config.DUKASCOPY_BARS_1M_DIR / inst) / 1e6:,.1f} MB  ({approved})")
+        if not problem:
+            missing = missing_tick_files(inst)
+            if missing:
+                lines.append(f"        WARNING: {len(missing)} downloaded day(s) have no tick file in the "
+                             f"tick folder, e.g. {missing[0]} (wrong folder or drive?)")
     lines.append(f"Downloads stop at {end:%Y-%m-%d} (today minus {config.DUKASCOPY_LAG_DAYS} days).")
     lines.append(f"Final-check period: {config.FINAL_CHECK_START_UTC:%Y-%m-%d} to "
                  f"{config.FINAL_CHECK_END_UTC:%Y-%m-%d} (not included); development data ends "
@@ -990,6 +1038,47 @@ def history_status() -> list[str]:
     lines.append(f"Final-check period read {len(reads)} time(s)"
                  + (f", last on {timeutils.fmt_dual(reads[-1]['time_utc'], with_date=True)}" if reads else "."))
     return lines
+
+
+def move_ticks(source: Path | None = None) -> dict:
+    """
+    Move tick files from `source` (default: data/dukascopy/ticks) into the
+    folder set in .env. Each file is copied, checked by size, then deleted
+    from the source. Nothing is overwritten: if any file already exists in
+    the target, nothing is moved.
+    """
+    source = Path(source or config.DUKASCOPY_TICKS_DIR_DEFAULT)
+    target = config.DUKASCOPY_TICKS_DIR
+    if not config.DUKASCOPY_TICKS_DIR_FROM_ENV:
+        raise TicksFolderError("Set DUKASCOPY_TICKS_DIR in .env first (the folder to move the ticks to).")
+    require_ticks_folder()
+    if source.resolve() == target.resolve() or not source.exists():
+        return {"moved": 0, "bytes": 0}
+    files = sorted(source.rglob("*.parquet"))
+    clashes = [f for f in files if (target / f.relative_to(source)).exists()]
+    if clashes:
+        raise TicksFolderError(f"{len(clashes)} file(s) already exist in {target}, e.g. "
+                               f"{clashes[0].relative_to(source)}; nothing was moved")
+    moved = total = 0
+    for f in files:
+        dest = target / f.relative_to(source)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + ".tmp")
+        shutil.copy2(f, tmp)
+        size = f.stat().st_size
+        if tmp.stat().st_size != size:
+            tmp.unlink()
+            raise TicksFolderError(f"copy of {f} came out a different size; stopped after {moved} files")
+        os.replace(tmp, dest)
+        f.unlink()
+        moved += 1
+        total += size
+    for d in sorted((p for p in source.rglob("*") if p.is_dir()), reverse=True):
+        if not any(d.iterdir()):
+            d.rmdir()                                    # empty instrument folders
+    if source.is_dir() and not any(source.iterdir()):
+        source.rmdir()
+    return {"moved": moved, "bytes": total}
 
 
 def _parse_day(text: str) -> datetime:
@@ -1011,10 +1100,24 @@ def main(argv: list[str] | None = None) -> int:
                       help="day AFTER the last one, YYYY-MM-DD (default: today minus the lag)")
     p_dl.add_argument("--feed", type=int, choices=(1, 2), default=None)
     sub.add_parser("status", help="what has been downloaded, and the final-check settings")
+    sub.add_parser("move-ticks", help="move tick files from data/dukascopy/ticks to DUKASCOPY_TICKS_DIR")
     args = parser.parse_args(argv)
 
     timeutils.configure_logging(log_file=config.LOGS_DIR / "history.log")
+    try:
+        return _run(args)
+    except TicksFolderError as exc:
+        print(f"\nSTOPPED: {exc}")
+        return 1
+
+
+def _run(args) -> int:
     if args.command == "status":
+        print("\n".join(history_status()))
+        return 0
+    if args.command == "move-ticks":
+        res = move_ticks()
+        print(f"Moved {res['moved']} tick files ({res['bytes'] / 1e6:.1f} MB) to {config.DUKASCOPY_TICKS_DIR}.\n")
         print("\n".join(history_status()))
         return 0
     if args.command == "pilot":

@@ -24,6 +24,8 @@ UTC = timezone.utc
 def tmp_storage(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "data" / "test.db")
     monkeypatch.setattr(config, "DUKASCOPY_TICKS_DIR", tmp_path / "data" / "dukascopy" / "ticks")
+    monkeypatch.setattr(config, "DUKASCOPY_TICKS_DIR_DEFAULT", tmp_path / "data" / "dukascopy" / "ticks")
+    monkeypatch.setattr(config, "DUKASCOPY_TICKS_DIR_FROM_ENV", False)   # whatever your .env says
     monkeypatch.setattr(config, "DUKASCOPY_BARS_1M_DIR", tmp_path / "data" / "dukascopy" / "bars_1m")
     monkeypatch.setattr(config, "DUKASCOPY_MIN_SECONDS_BETWEEN_REQUESTS", 0.0)
     yield tmp_path
@@ -448,3 +450,88 @@ def test_real_library_html_page_is_reported_as_blocked(monkeypatch):
     with pytest.raises(fetch_data.DukascopyError) as e:
         fetch_data.fetch_dukascopy_hour("EURUSD", datetime(2026, 3, 4, 10, tzinfo=UTC))
     assert e.value.blocked
+
+
+# --------------------------------------------------------------------------
+# Tick folder on another drive (DUKASCOPY_TICKS_DIR in .env)
+# --------------------------------------------------------------------------
+def _use_external(monkeypatch, path):
+    monkeypatch.setattr(config, "DUKASCOPY_TICKS_DIR", path)
+    monkeypatch.setattr(config, "DUKASCOPY_TICKS_DIR_FROM_ENV", True)
+
+
+def test_setting_read_from_env_file_only_that_value(tmp_path, monkeypatch):
+    monkeypatch.delenv("DUKASCOPY_TICKS_DIR", raising=False)
+    monkeypatch.delenv("IG_USERNAME", raising=False)
+    (tmp_path / ".env").write_text("IG_USERNAME=someone\nDUKASCOPY_TICKS_DIR=D:\\TrendsAnalyst\\dukascopy\\ticks\n")
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    assert config._setting_from_env_file("DUKASCOPY_TICKS_DIR") == "D:\\TrendsAnalyst\\dukascopy\\ticks"
+    import os
+    assert "IG_USERNAME" not in os.environ              # credentials not loaded by config.py
+    (tmp_path / ".env").write_text("DUKASCOPY_TICKS_DIR=\n")
+    assert config._setting_from_env_file("DUKASCOPY_TICKS_DIR") is None
+
+
+def test_missing_external_folder_stops_download_and_creates_nothing(fake_lib, monkeypatch, tmp_path):
+    target = tmp_path / "D_drive" / "ticks"
+    _use_external(monkeypatch, target)
+    monkeypatch.setattr(fetch_data, "default_history_end", lambda now=None: datetime(2026, 4, 1, tzinfo=UTC))
+    with pytest.raises(fetch_data.TicksFolderError, match="plugged in"):
+        fetch_data.download_history(["EURUSD"], _d(2026, 3, 2), _d(2026, 3, 3))
+    assert not target.exists() and fake_lib.calls == [] and db.get_history_days("dukascopy") == []
+    assert "NOT REACHABLE" in "\n".join(fetch_data.history_status())
+
+
+def test_double_quoted_path_with_tab_is_explained(monkeypatch):
+    _use_external(monkeypatch, fetch_data.Path("D:\\TrendsAnalyst\\dukascopy\ticks"))   # \t = tab
+    assert "without quotes" in fetch_data.ticks_folder_problem()
+
+
+def test_external_folder_used_when_present(fake_lib, monkeypatch, tmp_path):
+    target = tmp_path / "D_drive" / "ticks"
+    target.mkdir(parents=True)
+    _use_external(monkeypatch, target)
+    fetch_data.download_day("EURUSD", WED)
+    assert (target / "EURUSD" / "2026-03-04.parquet").exists()
+    assert fetch_data.build_month_bars("EURUSD", 2026, 3) == 72      # bars stay on the laptop folder
+    assert fetch_data.history_bar_file("EURUSD", 2026, 3).exists()
+
+
+def test_move_ticks_then_everything_still_matches(fake_lib, monkeypatch, tmp_path):
+    fetch_data.download_day("EURUSD", WED)
+    fetch_data.download_day("GBPUSD", WED)
+    source = config.DUKASCOPY_TICKS_DIR_DEFAULT
+    target = tmp_path / "D_drive" / "ticks"
+    target.mkdir(parents=True)
+    _use_external(monkeypatch, target)
+    assert len(fetch_data.missing_tick_files("EURUSD")) == 1        # before the move: not there yet
+    res = fetch_data.move_ticks()
+    assert res["moved"] == 2 and res["bytes"] > 0
+    assert not source.exists()                                      # emptied and removed
+    assert fetch_data.missing_tick_files("EURUSD") == [] == fetch_data.missing_tick_files("GBPUSD")
+    assert fetch_data.build_month_bars("EURUSD", 2026, 3) == 72
+    assert fetch_data.move_ticks()["moved"] == 0                    # running it again is harmless
+
+
+def test_move_ticks_never_overwrites(fake_lib, monkeypatch, tmp_path):
+    fetch_data.download_day("EURUSD", WED)
+    source_file = fetch_data.history_tick_file("EURUSD", WED)
+    target = tmp_path / "D_drive" / "ticks"
+    (target / "EURUSD").mkdir(parents=True)
+    (target / "EURUSD" / "2026-03-04.parquet").write_bytes(b"other")
+    _use_external(monkeypatch, target)
+    with pytest.raises(fetch_data.TicksFolderError, match="nothing was moved"):
+        fetch_data.move_ticks()
+    assert source_file.exists()
+
+
+def test_move_ticks_needs_the_setting():
+    with pytest.raises(fetch_data.TicksFolderError, match="Set DUKASCOPY_TICKS_DIR"):
+        fetch_data.move_ticks()
+
+
+def test_cli_reports_missing_drive(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(fetch_data.timeutils, "configure_logging", lambda **kw: None)
+    _use_external(monkeypatch, tmp_path / "nowhere")
+    assert fetch_data.main(["download"]) == 1
+    assert "STOPPED" in capsys.readouterr().out

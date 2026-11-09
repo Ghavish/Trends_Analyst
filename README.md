@@ -117,12 +117,25 @@ one per second, and a run stops by itself if Dukascopy refuses them.
 ```powershell
 python fetch_data.py pilot      # 1) every hour of 2-8 Mar 2026, all five instruments, then a report
 python fetch_data.py download   # 2) everything since 2019-01-01 (after the pilot is checked)
-python fetch_data.py status     # what has been downloaded
+python fetch_data.py status     # what has been downloaded, and where
 ```
 
 * Stored in UTC: ticks in `data/dukascopy/ticks/<INSTRUMENT>/<YYYY-MM-DD>.parquet`,
   1-minute bars (same columns as the IG bars, labelled by start time) in
   `data/dukascopy/bars_1m/<INSTRUMENT>/<YYYY-MM>.parquet`.
+* Ticks on another drive (they are ~14 GB from 2019): add a line to `.env`
+  **without quotes** (in double quotes `\t` becomes a tab), create the folder
+  once, then move any ticks already downloaded:
+
+  ```powershell
+  # in .env:  DUKASCOPY_TICKS_DIR=D:\TrendsAnalyst\dukascopy\ticks
+  New-Item -ItemType Directory "D:\TrendsAnalyst\dukascopy\ticks"
+  python fetch_data.py move-ticks
+  ```
+
+  The drive is only needed while downloading (or rebuilding bars); the bars
+  stay on the laptop. If it's unplugged or has another letter, downloads stop
+  with a message instead of writing elsewhere.
 * Resumable: a day counts as done only when all its hours downloaded; Ctrl+C
   is safe and the same command continues. Finished days are never fetched again.
 * Saturday and Sunday before 20:00 UTC are not requested (markets closed);
