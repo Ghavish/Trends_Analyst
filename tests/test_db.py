@@ -258,3 +258,17 @@ def test_second_connection_sees_writes(fresh_db):
     db.set_kill_switch("from engine", "engine", now=T0)
     with closing(sqlite3.connect(fresh_db)) as conn:
         assert conn.execute("SELECT is_on FROM flags WHERE name = 'KILL_SWITCH'").fetchone()[0] == 1
+
+
+def test_market_info_from_ig_details():
+    db.upsert_market_info("EURUSD", {
+        "epic": "CS.D.EURUSD.MINI.IP", "name": "EUR/USD Mini", "pip_size": 0.0001,
+        "one_pip_means": "0.0001 USD/EUR", "decimal_places_factor": 5, "value_of_one_pip": "1.00",
+        "contract_size": 10000.0, "currencies": [{"code": "USD", "is_default": True}],
+        "min_deal_size": {"value": 0.1, "unit": "POINTS"},
+        "min_stop_or_limit_distance": {"value": 2.0, "unit": "POINTS"},
+    }, now=T0)
+    info = db.get_market_info()["EURUSD"]
+    assert (info["pip_size"], info["decimals"], info["currency"]) == (0.0001, 5, "USD")
+    assert (info["min_deal_size"], info["min_stop_distance"]) == (0.1, 2.0)
+    assert info["updated_utc"] == T0

@@ -218,6 +218,14 @@ def _is_token_error(exc: Exception) -> bool:
     return any(code in text for code in _TOKEN_ERRORS)
 
 
+def _pip_size(one_pip_means):
+    """IG's onePipMeans, e.g. '0.0001 USD/EUR' -> 0.0001 (None if it doesn't start with a number)."""
+    try:
+        return float(str(one_pip_means).split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
 def _num(value):
     """IG sends some numbers as strings (e.g. contractSize). Convert if possible."""
     try:
@@ -519,6 +527,7 @@ class Broker:
             "contract_size": _num(inst.get("contractSize")),
             "lot_size": inst.get("lotSize"),
             "one_pip_means": inst.get("onePipMeans"),
+            "pip_size": _pip_size(inst.get("onePipMeans")),
             "value_of_one_pip": inst.get("valueOfOnePip"),
             "currencies": [
                 {"code": c.get("code"), "is_default": c.get("isDefault")}

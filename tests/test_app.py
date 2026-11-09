@@ -34,49 +34,63 @@ def run_app():
 
 def all_text(at) -> str:
     parts = [m.value for m in at.markdown] + [c.value for c in at.caption] + \
-            [str(m.value) for m in at.metric] + [e.value for e in at.error] + \
-            [w.value for w in at.warning] + [s.value for s in at.success] + [i.value for i in at.info]
+            [e.value for e in at.error] + [w.value for w in at.warning] + \
+            [s.value for s in at.success] + [i.value for i in at.info] + \
+            [x.label for x in at.expander]
     return "\n".join(map(str, parts))
 
 
 def test_without_database_asks_to_start_engine():
     at = run_app()
-    assert "Start the engine first" in all_text(at)
+    assert "Start the engine" in all_text(at)
     assert not Path(config.DB_PATH).exists()          # the dashboard did not create it
 
 
-def test_shows_status_prices_and_gaps():
-    now = timeutils.now_utc()
+def seed_running_engine(now):
     db.set_engine_status({"state": "running", "stream_status": "CONNECTED:WS-STREAMING",
                           "connections_opened": 1}, now=now)
     db.upsert_feed_status([{
         "instrument": "EURUSD", "epic": config.INSTRUMENTS["EURUSD"]["epic"],
-        "last_tick_utc": now - timedelta(seconds=3), "bid": 1.11956, "offer": 1.11965,
+        "last_tick_utc": now - timedelta(seconds=3), "bid": 1.1194, "offer": 1.11949,
         "market_status": "DEAL", "market_status_utc": now, "ticks_today": 1234,
     }], now=now)
+    db.upsert_market_info("EURUSD", {
+        "epic": config.INSTRUMENTS["EURUSD"]["epic"], "name": "EUR/USD Mini", "pip_size": 0.0001,
+        "one_pip_means": "0.0001 USD/EUR", "decimal_places_factor": 5,
+        "currencies": [{"code": "USD", "is_default": True}],
+        "min_deal_size": {"value": 0.1, "unit": "POINTS"},
+    }, now=now)
+
+
+def test_shows_status_prices_and_gaps_in_plain_words():
+    now = timeutils.now_utc()
+    seed_running_engine(now)
     db.add_closed_gap("GER40", "OUTAGE", now - timedelta(minutes=10), now - timedelta(minutes=9), "test gap")
     at = run_app()
     text = all_text(at)
-    assert "Running" in text and "CONNECTED:WS-STREAMING" in text
-    assert "Trading allowed" in text
+    assert "All OK: recording 5 markets (1 open" in text
+    assert "Trading: allowed" in text
     prices = at.dataframe[0].value
-    eur = prices[prices["Instrument"] == "EUR/USD"].iloc[0]
-    assert eur["Bid"] == 1.11956 and eur["Market"] == "DEAL" and eur["Updates today"] == 1234
+    eur = prices[prices["Market"] == "EUR/USD"].iloc[0]
+    assert eur["Status"] == "Open"                          # not IG's code "DEAL"
+    assert eur["Bid"] == "1.11940"                          # IG's 5 decimals, trailing zero kept
+    assert eur["Spread"] == "0.9 pips"
     assert "UTC" in eur["Last price (UTC / MUT)"] and "MUT" in eur["Last price (UTC / MUT)"]
+    assert "Gaps in the last 24 h: 1" in text
     gaps = at.dataframe[1].value
-    assert list(gaps["Kind"]) == ["OUTAGE"] and list(gaps["Instrument"]) == ["Germany 40"]
+    assert list(gaps["What happened"]) == ["Connection to IG lost"] and list(gaps["Market"]) == ["Germany 40"]
 
 
 def test_engine_not_running_warning():
     db.init_db()
     at = run_app()
-    assert "NOT live" in all_text(at)
+    assert "Not recording: the engine is not running" in all_text(at)
 
 
 def test_kill_button_only_writes_a_job():
     db.init_db()
     at = run_app()
-    button = next(b for b in at.button if b.label == "Kill switch ON")
+    button = next(b for b in at.button if b.label == "Stop trading (kill switch ON)")
     button.click().run()
     jobs = db.list_jobs()
     assert [(j["kind"], j["requested_by"]) for j in jobs] == [(db.JOB_KILL_SWITCH_ON, "dashboard")]
@@ -87,6 +101,6 @@ def test_kill_button_only_writes_a_job():
 def test_kill_off_needs_reason_and_confirmation():
     db.init_db()
     at = run_app()
-    next(b for b in at.button if b.label == "Kill switch OFF").click().run()
+    next(b for b in at.button if b.label == "Resume trading (kill switch OFF)").click().run()
     assert db.list_jobs() == []
     assert "Give a reason" in all_text(at)

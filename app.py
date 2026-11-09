@@ -1,5 +1,5 @@
 """
-app.py - the dashboard (Streamlit). First version (Phase 1, step 6).
+app.py - the dashboard (Streamlit).
 
     streamlit run app.py          (opens http://localhost:8501 in your browser)
 
@@ -8,10 +8,10 @@ engine's work. It only READS the database / Parquet files and WRITES
 requests into the jobs table (e.g. the kill switch), which the engine
 (signals.py) carries out within a few seconds.
 
-Shows: engine and stream status, live prices for the five instruments, gaps,
-market status changes, the latest complete 1-minute bars, and the kill
-switch / halt controls. Every time is shown in UTC and Mauritius time.
-Trade cards and the other pages (Section 10.4) come in later phases.
+Pages (Section 10.4) are added as the project grows; for now there is one,
+"Data and controls". Streamlit hides the page menu while there is only one.
+Plain wording and number formats come from display.py. Every time is shown in
+UTC and Mauritius time (MUT, UTC+4).
 """
 
 from __future__ import annotations
@@ -24,227 +24,213 @@ import streamlit as st
 
 import config
 import db
+import display
 import fetch_data
 import timeutils
 
-REFRESH_SECONDS = 5          # live sections refresh themselves this often
-GAP_HOURS = 24               # gaps shown from the last N hours
+REFRESH_SECONDS = 5          # live parts of the page refresh themselves this often
+GAP_HOURS = 24               # gaps listed from the last N hours
 
 st.set_page_config(page_title="Trends Analyst", layout="wide")
 
 
 # --------------------------------------------------------------------------
-# Small helpers
+# Data and controls page
 # --------------------------------------------------------------------------
-def dual(ts, seconds: bool = True) -> str:
-    """UTC and MUT; adds the date when it isn't today (UTC)."""
-    if ts is None or pd.isna(ts):
-        return "-"
-    ts = pd.Timestamp(ts).to_pydatetime()
-    today = timeutils.now_utc().date()
-    return timeutils.fmt_dual(ts, with_date=ts.date() != today, seconds=seconds)
+def data_and_controls() -> None:
+    st.title("Data and controls")
+    st.caption("Trends Analyst · IG demo account · times in UTC and Mauritius time (MUT) · "
+               "not financial advice")
 
+    if not Path(config.DB_PATH).exists():
+        st.info("Nothing recorded yet. Start the engine with `python signals.py`.")
+        return
 
-def age_text(ts) -> str:
-    if ts is None:
-        return "-"
-    secs = (timeutils.now_utc() - ts).total_seconds()
-    if secs < 120:
-        return f"{secs:.0f} s"
-    if secs < 7200:
-        return f"{secs / 60:.0f} min"
-    return f"{secs / 3600:.1f} h"
-
-
-def duration_text(start, end) -> str:
-    end = end or timeutils.now_utc()
-    secs = (end - start).total_seconds()
-    return f"{secs:.0f} s" if secs < 120 else (f"{secs / 60:.1f} min" if secs < 7200 else f"{secs / 3600:.1f} h")
-
-
-def database_ready() -> bool:
-    return Path(config.DB_PATH).exists()
-
-
-# --------------------------------------------------------------------------
-# Page
-# --------------------------------------------------------------------------
-st.title("Trends Analyst")
-st.caption("IG demo account · data status (Phase 1). Times in UTC and Mauritius time (MUT, UTC+4). "
-           "Not financial advice.")
-
-if not database_ready():
-    st.info("No database yet. Start the engine first:  `python signals.py`")
-    st.stop()
+    live_section()
+    bars_section()
+    safety_section()
 
 
 @st.fragment(run_every=REFRESH_SECONDS)
-def live_status() -> None:
+def live_section() -> None:
     now = timeutils.now_utc()
-    st.caption(f"Updated {timeutils.fmt_dual(now, with_date=True, seconds=True)} · refreshes every "
-               f"{REFRESH_SECONDS} s")
-
-    # ---- engine and stream ----
     status = db.get_engine_status()
-    running = db.engine_is_running()
-    heartbeat = status.get("heartbeat")
-    c1, c2 = st.columns(2)
-    c1.metric("Engine", "Running" if running else "Not running",
-              help="Based on the engine's heartbeat (written every minute).")
-    c2.metric("Stream connections", status.get("connections_opened", "-") if running else "-",
-              help="1 = no reconnection needed since the engine started.")
-    st.markdown(
-        f"**Price stream:** {status.get('stream_status', '-') if running else '-'} · "
-        f"**last heartbeat:** {dual(heartbeat) if heartbeat else '-'}"
-        f"{f' ({age_text(heartbeat)} ago)' if heartbeat else ''}")
-    if not running:
-        st.warning("The engine is not running, so the prices below are NOT live. "
-                   "Start it with `python signals.py`.")
-    if status.get("market_status_error"):
-        st.warning(f"Market status unavailable: {status['market_status_error']}")
+    running = db.engine_is_running(now=now)
+    feed = db.get_feed_status()
+    open_gaps = db.list_gaps(open_only=True)
+    info = db.get_market_info()
 
-    blocked = db.trading_block_reasons()
+    # ---- one line: is everything OK? ----
+    level, message = display.overall_status(
+        running, status.get("stream_status"), feed, open_gaps, status.get("market_status_error"), now)
+    {"ok": st.success, "warning": st.warning, "error": st.error}[level](message)
+
+    blocked = db.trading_block_reasons(now=now)
     if blocked:
-        st.error("Trading BLOCKED: " + " · ".join(blocked))
+        st.error("Trading stopped: " + " · ".join(blocked))
     else:
-        st.success("Trading allowed (no kill switch, no halt). Signals start in a later phase.")
+        st.info("Trading: allowed. No signals yet - they start in a later phase.")
 
-    # ---- live prices ----
-    st.subheader("Live prices")
-    feed = {f["instrument"]: f for f in db.get_feed_status()}
+    # ---- prices ----
+    st.subheader("Prices")
+    feed_by_inst = {f["instrument"]: f for f in feed}
     rows = []
-    for key, inst in config.INSTRUMENTS.items():
-        f = feed.get(key, {})
-        bid, offer = f.get("bid"), f.get("offer")
+    for key in config.INSTRUMENTS:
+        f = feed_by_inst.get(key, {})
+        mi = info.get(key, {})
+        decimals = mi.get("decimals")
+        last = f.get("last_tick_utc")
         rows.append({
-            "Instrument": inst["name"],
-            "Bid": bid,
-            "Offer": offer,
-            "Spread": (offer - bid) if bid is not None and offer is not None else None,
-            "Market": f.get("market_status") or "unknown",
-            "Last price (UTC / MUT)": dual(f.get("last_tick_utc")),
-            "Age": age_text(f.get("last_tick_utc")),
-            "Updates today": f.get("ticks_today"),
-            "Epic": inst["epic"],
+            "Market": display.instrument_name(key),
+            "Status": display.market_status_text(f.get("market_status")),
+            "Bid": display.format_price(f.get("bid"), decimals),
+            "Offer": display.format_price(f.get("offer"), decimals),
+            "Spread": display.format_spread(f.get("bid"), f.get("offer"), mi.get("pip_size"),
+                                            display.spread_unit(key)),
+            "Last price (UTC / MUT)": display.time_text(last, now),
+            "Age": display.age_text((now - last).total_seconds()) if last else "-",
         })
-    st.dataframe(
-        pd.DataFrame(rows), hide_index=True,
-        column_config={
-            "Bid": st.column_config.NumberColumn(format="%.6g"),
-            "Offer": st.column_config.NumberColumn(format="%.6g"),
-            "Spread": st.column_config.NumberColumn(format="%.4g", help="Offer minus bid, in price units"),
-        },
-    )
-    st.caption("Market = IG's dealing status (DEAL means open). IG only sends a price when it changes, "
-               "so a quiet market can show an older last price.")
+    st.dataframe(pd.DataFrame(rows), hide_index=True)
+    st.caption(f"Refreshes every {REFRESH_SECONDS} s. IG sends a price only when it changes, "
+               "so a calm market can show an older price.")
 
-    # ---- gaps ----
-    st.subheader(f"Gaps (last {GAP_HOURS} h)")
+    # ---- gaps (summary line, details on click) ----
     gaps = db.list_gaps(since_utc=now - timedelta(hours=GAP_HOURS))
-    if not gaps:
-        st.write("No gaps recorded.")
-    else:
-        gaps.sort(key=lambda g: (g["end_utc"] is not None, -g["start_utc"].timestamp()))
+    ongoing = sum(1 for g in gaps if g["end_utc"] is None)
+    label = (f"Gaps in the last {GAP_HOURS} h: none" if not gaps else
+             f"Gaps in the last {GAP_HOURS} h: {len(gaps)}" + (f" ({ongoing} ongoing)" if ongoing else ""))
+    with st.expander(label, key="gaps_expander"):
+        if gaps:
+            gaps.sort(key=lambda g: (g["end_utc"] is not None, -g["start_utc"].timestamp()))
+            st.dataframe(pd.DataFrame([{
+                "Market": display.instrument_name(g["instrument"]),
+                "What happened": display.gap_kind_text(g["kind"]),
+                "From (UTC / MUT)": display.time_text(g["start_utc"], now),
+                "To (UTC / MUT)": display.time_text(g["end_utc"], now) if g["end_utc"] else "ongoing",
+                "Length": display.age_text(((g["end_utc"] or now) - g["start_utc"]).total_seconds()),
+            } for g in gaps]), hide_index=True)
+        else:
+            st.write("No missing data.")
+
+    # ---- technical details (hidden by default) ----
+    with st.expander("Technical details", key="details_expander"):
+        hb = status.get("heartbeat")
+        st.markdown(
+            f"- Engine heartbeat: {display.time_text(hb, now)}"
+            f"{' (' + display.age_text((now - hb).total_seconds()) + ' ago)' if hb else ''}\n"
+            f"- IG stream status: `{status.get('stream_status', '-')}` · connections opened since "
+            f"start: {status.get('connections_opened', '-')} (1 = no reconnection needed)")
+        if status.get("market_status_error"):
+            st.markdown(f"- Market status problem: {status['market_status_error']}")
         st.dataframe(pd.DataFrame([{
-            "Instrument": config.INSTRUMENTS.get(g["instrument"], {}).get("name", g["instrument"]),
-            "Kind": g["kind"],
-            "Start (UTC / MUT)": dual(g["start_utc"]),
-            "End (UTC / MUT)": dual(g["end_utc"]) if g["end_utc"] else "still open",
-            "Duration": duration_text(g["start_utc"], g["end_utc"]),
-            "Detail": g["detail"],
-        } for g in gaps]), hide_index=True)
-        st.caption("OUTAGE = stream not connected · QUIET = no price while IG reported the market open "
-                   "(may be a lull) · ENGINE_OFF = engine not running")
+            "Market": display.instrument_name(key),
+            "IG epic": inst["epic"],
+            "IG market code": feed_by_inst.get(key, {}).get("market_status") or "-",
+            "Price updates today": feed_by_inst.get(key, {}).get("ticks_today"),
+            "One pip means": info.get(key, {}).get("one_pip_means") or "-",
+            "Min deal size": info.get(key, {}).get("min_deal_size"),
+            "Min stop distance": info.get(key, {}).get("min_stop_distance"),
+        } for key, inst in config.INSTRUMENTS.items()]), hide_index=True)
 
 
 @st.fragment(run_every=60)
-def recent_bars() -> None:
-    st.subheader("Latest complete 1-minute bars")
-    key = st.selectbox("Instrument", list(config.INSTRUMENTS),
-                       format_func=lambda k: config.INSTRUMENTS[k]["name"])
-    today = timeutils.now_utc().date()
-    try:
-        bars = fetch_data.read_bars(key, today)
-    except Exception as exc:          # e.g. the engine is swapping the file at this instant
-        st.warning(f"Could not read the bar file just now ({exc}); it will retry.")
-        return
-    if bars.empty:
-        st.write("No complete bars for today (UTC) yet.")
-        return
-    last = bars.tail(15).iloc[::-1]
-    st.dataframe(pd.DataFrame({
-        "Bar start (UTC / MUT)": [dual(t, seconds=False) for t in last["time_utc"]],
-        "Bid open": last["bid_open"], "Bid high": last["bid_high"],
-        "Bid low": last["bid_low"], "Bid close": last["bid_close"],
-        "Offer close": last["offer_close"],
-        "Updates": last["tick_count"],
-        "Spread avg": last["spread_mean"], "Spread max": last["spread_max"],
-        "Partial": ["yes" if p else "" for p in last.get("partial", [False] * len(last))],
-    }), hide_index=True, column_config={
-        c: st.column_config.NumberColumn(format="%.6g")
-        for c in ("Bid open", "Bid high", "Bid low", "Bid close", "Offer close", "Spread avg", "Spread max")
-    })
-    st.caption(f"{len(bars)} bars today (UTC). A bar labelled 10:00 covers 10:00-10:01 and only "
-               "appears once it is complete (no unfinished bars). Partial = prices were not being "
-               "received for part of that minute (outage, engine off or start-up).")
+def bars_section() -> None:
+    with st.expander("1-minute bars (latest 15)", key="bars_expander"):
+        key = st.selectbox("Market", list(config.INSTRUMENTS), format_func=display.instrument_name)
+        decimals = db.get_market_info().get(key, {}).get("decimals")
+        today = timeutils.now_utc().date()
+        try:
+            bars = fetch_data.read_bars(key, today)
+        except Exception as exc:          # e.g. the engine is swapping the file at this instant
+            st.warning(f"Could not read the bar file just now ({exc}); it will retry.")
+            return
+        if bars.empty:
+            st.write("No complete bars for today (UTC) yet.")
+            return
+        last = bars.tail(15).iloc[::-1]
+        partial = last["partial"] if "partial" in last else pd.Series(False, index=last.index)
+        fmt = lambda col: [display.format_price(v, decimals) for v in last[col]]  # noqa: E731
+        st.dataframe(pd.DataFrame({
+            "Minute (UTC / MUT)": [display.time_text(t.to_pydatetime(), seconds=False) for t in last["time_utc"]],
+            "Open": fmt("bid_open"), "High": fmt("bid_high"), "Low": fmt("bid_low"), "Close": fmt("bid_close"),
+            "Price updates": last["tick_count"].astype(int).tolist(),
+            "Complete?": ["no - some prices missing" if p else "yes" for p in partial],
+        }), hide_index=True)
+        st.caption("Bid prices. The 10:00 bar covers 10:00-10:01 and appears only after it ends. "
+                   "'Some prices missing' = the connection or engine was down for part of that minute.")
 
 
-def safety_controls() -> None:
-    st.subheader("Kill switch and halt")
-    st.caption("Buttons send a request to the engine (it acts within a few seconds). A kill request "
-               "blocks trading immediately, even before the engine has processed it. "
-               "Command-line alternative: `python killswitch.py`.")
+def safety_section() -> None:
+    st.subheader("Kill switch")
     flags = db.get_flags()
-    for name, label in ((db.KILL_SWITCH, "Kill switch"), (db.HALT, "Automatic halt")):
-        f = flags[name]
-        state = "ON" if f["is_on"] else "off"
-        detail = f" - by {f['source']}: {f['reason']} (since {dual(f['changed_utc'])})" if f["changed_utc"] else ""
-        st.write(f"**{label}: {state}**{detail}")
+    kill, halt = flags[db.KILL_SWITCH], flags[db.HALT]
+    c1, c2 = st.columns(2)
+    with c1:
+        st.badge("Kill switch: ON" if kill["is_on"] else "Kill switch: off",
+                 color="red" if kill["is_on"] else "green")
+        if kill["is_on"]:
+            st.caption(f"{kill['reason']} (by {kill['source']}, {display.time_text(kill['changed_utc'])})")
+    with c2:
+        st.badge("Automatic halt: ON" if halt["is_on"] else "Automatic halt: off",
+                 color="red" if halt["is_on"] else "green")
+        if halt["is_on"]:
+            st.caption(f"{halt['reason']} ({display.time_text(halt['changed_utc'])})")
 
-    left, mid, right = st.columns(3)
-    with left.form("kill_on", clear_on_submit=True):
+    with st.form("kill_on", clear_on_submit=True):
         reason = st.text_input("Reason", value="manual stop from the dashboard")
-        if st.form_submit_button("Kill switch ON", type="primary"):
+        if st.form_submit_button("Stop trading (kill switch ON)", type="primary"):
             job = db.request_job(db.JOB_KILL_SWITCH_ON, {"reason": reason}, "dashboard")
-            st.success(f"Kill request sent (job {job}).")
-    with mid.form("kill_off", clear_on_submit=True):
-        reason = st.text_input("Reason for resuming", value="")
-        sure = st.checkbox("I have checked and want to allow trading again")
-        if st.form_submit_button("Kill switch OFF"):
-            if not reason.strip() or not sure:
-                st.error("Give a reason and tick the box to confirm.")
-            else:
-                job = db.request_job(db.JOB_KILL_SWITCH_OFF, {"reason": reason}, "dashboard")
-                st.success(f"Request sent (job {job}).")
-    with right.form("clear_halt", clear_on_submit=True):
-        reason = st.text_input("Reason for clearing the halt", value="")
-        sure = st.checkbox("I have checked the cause of the halt")
-        if st.form_submit_button("Clear automatic halt"):
-            if not reason.strip() or not sure:
-                st.error("Give a reason and tick the box to confirm.")
-            else:
-                job = db.request_job(db.JOB_CLEAR_HALT, {"reason": reason}, "dashboard")
-                st.success(f"Request sent (job {job}).")
+            st.success(f"Stop request sent (request {job}). Trading is blocked from now on.")
+    st.caption("The engine carries out requests within a few seconds. "
+               "If the dashboard is unavailable: `python killswitch.py on`.")
 
-    with st.expander("Activation log and recent requests"):
+    with st.expander("Resume trading or clear an automatic halt"):
+        left, right = st.columns(2)
+        with left.form("kill_off", clear_on_submit=True):
+            reason = st.text_input("Why is it safe to resume?")
+            sure = st.checkbox("I have checked and want to allow trading again")
+            if st.form_submit_button("Resume trading (kill switch OFF)"):
+                if not reason.strip() or not sure:
+                    st.error("Give a reason and tick the box to confirm.")
+                else:
+                    job = db.request_job(db.JOB_KILL_SWITCH_OFF, {"reason": reason}, "dashboard")
+                    st.success(f"Request sent (request {job}).")
+        with right.form("clear_halt", clear_on_submit=True):
+            reason = st.text_input("What caused the halt, and is it fixed?")
+            sure = st.checkbox("I have checked the cause of the halt")
+            if st.form_submit_button("Clear automatic halt"):
+                if not reason.strip() or not sure:
+                    st.error("Give a reason and tick the box to confirm.")
+                else:
+                    job = db.request_job(db.JOB_CLEAR_HALT, {"reason": reason}, "dashboard")
+                    st.success(f"Request sent (request {job}).")
+
+    with st.expander("History: kill switch, requests, market open/close"):
         events = db.list_flag_events(20)
+        st.markdown("**Kill switch and halt changes**")
         st.dataframe(pd.DataFrame([{
-            "Time (UTC / MUT)": dual(e["time_utc"]), "Flag": e["flag"], "Action": e["action"],
+            "When (UTC / MUT)": display.time_text(e["time_utc"]),
+            "What": f"{'Kill switch' if e['flag'] == db.KILL_SWITCH else 'Automatic halt'} {e['action']}",
             "By": e["source"], "Reason": e["reason"],
-        } for e in events]) if events else pd.DataFrame(), hide_index=True)
+        } for e in events]) if events else pd.DataFrame({"": ["none yet"]}), hide_index=True)
         jobs = db.list_jobs(10)
+        st.markdown("**Requests from the dashboard**")
         st.dataframe(pd.DataFrame([{
-            "Job": j["id"], "Kind": j["kind"], "Status": j["status"],
-            "Requested (UTC / MUT)": dual(j["requested_utc"]), "Message": j["message"],
-        } for j in jobs]) if jobs else pd.DataFrame(), hide_index=True)
+            "Request": j["id"], "What": j["kind"].replace("_", " ").lower(), "Status": j["status"].lower(),
+            "Sent (UTC / MUT)": display.time_text(j["requested_utc"]), "Result": j["message"] or "",
+        } for j in jobs]) if jobs else pd.DataFrame({"": ["none yet"]}), hide_index=True)
         statuses = db.list_market_status_log(20)
+        st.markdown("**Market open/close changes reported by IG**")
         st.dataframe(pd.DataFrame([{
-            "Time (UTC / MUT)": dual(m["time_utc"]),
-            "Instrument": config.INSTRUMENTS.get(m["instrument"], {}).get("name", m["instrument"]),
-            "Market status": m["status"],
-        } for m in statuses]) if statuses else pd.DataFrame(), hide_index=True)
+            "When (UTC / MUT)": display.time_text(m["time_utc"]),
+            "Market": display.instrument_name(m["instrument"]),
+            "Now": display.market_status_text(m["status"]),
+        } for m in statuses]) if statuses else pd.DataFrame({"": ["none yet"]}), hide_index=True)
 
 
-live_status()
-recent_bars()
-safety_controls()
+# --------------------------------------------------------------------------
+# Navigation (more pages are added in later phases, Section 10.4)
+# --------------------------------------------------------------------------
+page = st.navigation([st.Page(data_and_controls, title="Data and controls", default=True)],
+                     position="top")
+page.run()

@@ -398,3 +398,18 @@ def test_recorder_marks_bars_around_restart_but_not_quiet_gaps():
     bars = fetch_data.read_bars("EURUSD", T.date())
     got = dict(zip([t.minute for t in bars["time_utc"]], bars["partial"]))
     assert got == {0: False, 1: True, 6: True, 7: False, 8: False}
+
+
+def test_engine_stores_contract_details_and_survives_a_failure():
+    class FakeMarkets:
+        def get_market(self, epic):
+            if epic == config.INSTRUMENTS["GER40"]["epic"]:
+                raise broker.BrokerConnectionError("timeout")
+            return {"epic": epic, "pip_size": 0.0001, "decimal_places_factor": 5, "currencies": []}
+
+    engine = signals.Engine()
+    engine.broker = FakeMarkets()
+    engine._store_market_info()
+    info = db.get_market_info()
+    assert set(info) == set(config.INSTRUMENTS) - {"GER40"}
+    assert info["EURUSD"]["decimals"] == 5

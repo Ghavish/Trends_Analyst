@@ -60,6 +60,7 @@ class Engine:
         self.broker = broker.Broker()
         self.broker.connect()
         log.info("Logged in to IG DEMO")
+        self._store_market_info()
 
         self.recorder = fetch_data.Recorder()
         self.recorder.start(last_heartbeat=last_heartbeat)
@@ -116,6 +117,14 @@ class Engine:
             log.info("Ctrl+C received")
         finally:
             self.stop()
+
+    def _store_market_info(self) -> None:
+        """Contract details (pip size, decimals, minimum deal...) for the dashboard and, later, sizing."""
+        for key, inst in config.INSTRUMENTS.items():
+            try:
+                db.upsert_market_info(key, self.broker.get_market(inst["epic"]))
+            except broker.BrokerError as exc:
+                log.warning("Could not read market details for %s: %s", key, exc)
 
     # ---------------- scheduled work ----------------
     @staticmethod

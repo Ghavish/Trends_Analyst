@@ -96,7 +96,7 @@ def show_market(b: broker.Broker, epic: str) -> dict:
     print(f"\n  {m['epic']}  -  {m['name']}")
     print(f"    Type / expiry          : {m['type']} / {m['expiry']}")
     print(f"    Status                 : {m['market_status']}")
-    pip = pip_size(m)
+    pip = m.get("pip_size")
     spread = f"{m['spread'] / pip:.1f} pips" if (pip and m['spread'] is not None) else m['spread']
     print(f"    Bid / offer / spread   : {m['bid']} / {m['offer']} / {spread}")
     print(f"    Snapshot received      : {timeutils.fmt_dual(m['received_utc'], with_date=True, seconds=True)}")
@@ -154,19 +154,11 @@ SHOWN_EVENTS = {"connecting", "status", "reconnect_needed", "reconnecting", "rec
                 "fatal", "test", "bad_update", "market_status_error"}
 
 
-def pip_size(market: dict) -> float | None:
-    """IG's 'onePipMeans', e.g. '0.0001 USD/EUR' -> 0.0001 (None if not a number)."""
-    try:
-        return float(str(market.get("one_pip_means")).split()[0])
-    except (ValueError, IndexError):
-        return None
-
-
 def stream_prices(b: broker.Broker, epic: str, seconds: int, drop_after: int | None,
                   market: dict | None = None) -> bool:
     """Stream one epic for `seconds`; return True if it behaved as expected."""
     delays_ms = []
-    pip = pip_size(market or {})
+    pip = (market or {}).get("pip_size")
     decimals = (market or {}).get("decimal_places_factor")
     decimals = int(decimals) if isinstance(decimals, (int, float)) else None
 

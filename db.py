@@ -24,6 +24,7 @@ Tables:
   feed_status       latest price and market status per instrument (for the dashboard)
   market_status_log every change of IG's market status (DLG_FLAG)
   engine_status     engine heartbeat and stream status (is the engine running?)
+  market_info       contract details from IG (pip size, decimals, min deal ...)
 
 Price bars are NOT here: they are stored in Parquet files (fetch_data.py).
 
@@ -204,6 +205,23 @@ MIGRATIONS = [
         key          TEXT PRIMARY KEY,     -- e.g. heartbeat, stream_status, state
         value        TEXT,
         updated_utc  TEXT NOT NULL
+    );
+    """,
+    # ---- version 3: contract details from IG (read by the engine at start) ----
+    """
+    CREATE TABLE market_info (
+        instrument         TEXT PRIMARY KEY,
+        epic               TEXT NOT NULL,
+        name               TEXT,
+        pip_size           REAL,           -- from IG's onePipMeans
+        one_pip_means      TEXT,
+        decimals           INTEGER,        -- IG's decimalPlacesFactor
+        value_of_one_pip   TEXT,
+        contract_size      REAL,
+        currency           TEXT,
+        min_deal_size      REAL,
+        min_stop_distance  REAL,
+        updated_utc        TEXT NOT NULL
     );
     """,
 ]
@@ -789,3 +807,40 @@ def engine_is_running(now: datetime | None = None) -> bool:
         return False
     age = ((now or timeutils.now_utc()) - hb).total_seconds()
     return age <= config.ENGINE_HEARTBEAT_STALE_SECONDS
+
+
+# --------------------------------------------------------------------------
+# Contract details from IG (pip size, decimals, minimum deal ...)
+# --------------------------------------------------------------------------
+def upsert_market_info(instrument: str, market: dict, now: datetime | None = None) -> None:
+    """market: the dict returned by broker.Broker.get_market()."""
+    def rule_value(r):
+        return r.get("value") if r else None
+
+    currency = next((c["code"] for c in market.get("currencies") or [] if c.get("is_default")), None)
+    decimals = market.get("decimal_places_factor")
+    with _conn() as conn, conn:
+        conn.execute(
+            "INSERT INTO market_info (instrument, epic, name, pip_size, one_pip_means, decimals, "
+            "value_of_one_pip, contract_size, currency, min_deal_size, min_stop_distance, updated_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (instrument) DO UPDATE SET "
+            "epic = excluded.epic, name = excluded.name, pip_size = excluded.pip_size, "
+            "one_pip_means = excluded.one_pip_means, decimals = excluded.decimals, "
+            "value_of_one_pip = excluded.value_of_one_pip, contract_size = excluded.contract_size, "
+            "currency = excluded.currency, min_deal_size = excluded.min_deal_size, "
+            "min_stop_distance = excluded.min_stop_distance, updated_utc = excluded.updated_utc",
+            (instrument, market.get("epic"), market.get("name"), market.get("pip_size"),
+             market.get("one_pip_means"), int(decimals) if isinstance(decimals, (int, float)) else None,
+             market.get("value_of_one_pip"),
+             market.get("contract_size") if isinstance(market.get("contract_size"), (int, float)) else None,
+             currency, rule_value(market.get("min_deal_size")),
+             rule_value(market.get("min_stop_or_limit_distance")),
+             _ts(now or timeutils.now_utc())),
+        )
+
+
+def get_market_info() -> dict[str, dict]:
+    """{instrument: {...}}"""
+    with _conn() as conn:
+        rows = conn.execute("SELECT * FROM market_info").fetchall()
+    return {r["instrument"]: {**dict(r), "updated_utc": _dt(r["updated_utc"])} for r in rows}

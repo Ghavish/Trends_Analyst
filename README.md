@@ -19,6 +19,7 @@ truth. Personal use only; nothing here is financial advice.
 | `features.py`, `labels.py`, `train.py`, `backtest.py` | Model pipeline (Phase 2) |
 | `signals.py` | The engine (background process) |
 | `app.py` | The dashboard (Streamlit) |
+| `display.py` | Plain wording and price/spread formats used on screen (and later in alerts) |
 | `test_connection.py` | Checks the IG demo connection, shows live EUR/USD |
 | `killswitch.py` | Command-line kill switch |
 | `tests/` | Automated tests (`python -m pytest`) |
