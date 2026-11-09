@@ -362,3 +362,39 @@ def test_engine_heartbeat():
     assert not db.engine_is_running(now=now + timedelta(seconds=config.ENGINE_HEARTBEAT_STALE_SECONDS + 1))
     db.set_engine_status({"state": "stopped"}, now=now)
     assert not db.engine_is_running(now=now)
+
+
+# --------------------------------------------------------------------------
+# Partial bars (engine stopped / started / stream down during the minute)
+# --------------------------------------------------------------------------
+def test_partial_bars_marked():
+    df = ticks_df([(T + timedelta(minutes=m, seconds=10), 1.1, 1.1001) for m in range(6)])
+    engine_off = (T + timedelta(minutes=1, seconds=56), T + timedelta(minutes=3, seconds=53))
+    bars = fetch_data.ticks_to_bars(df, not_receiving=[engine_off])
+    assert list(bars["partial"]) == [False, True, True, True, False, False]
+
+
+def test_bar_containing_session_start_is_partial():
+    df = ticks_df([(T + timedelta(seconds=55), 1.1, 1.1001), (T + timedelta(minutes=1, seconds=5), 1.1, 1.1001)])
+    bars = fetch_data.ticks_to_bars(df, session_start=T + timedelta(seconds=53))
+    assert list(bars["partial"]) == [True, False]
+
+
+def test_open_outage_marks_bars_partial():
+    df = ticks_df([(T + timedelta(seconds=5), 1.1, 1.1001), (T + timedelta(minutes=2, seconds=5), 1.1, 1.1001)])
+    bars = fetch_data.ticks_to_bars(df, not_receiving=[(T + timedelta(minutes=1, seconds=30), None)])
+    assert list(bars["partial"]) == [False, True]
+
+
+def test_recorder_marks_bars_around_restart_but_not_quiet_gaps():
+    rec = new_recorder(now=T + timedelta(minutes=6, seconds=53))
+    db.add_closed_gap("EURUSD", "ENGINE_OFF", T + timedelta(minutes=1, seconds=56),
+                      T + timedelta(minutes=6, seconds=53))
+    db.add_closed_gap("EURUSD", "QUIET", T + timedelta(minutes=8), T + timedelta(minutes=9))
+    rec.start()
+    for m in (0, 1, 6, 7, 8):
+        rec.on_tick(tick(EUR, T + timedelta(minutes=m, seconds=55), 1.1, 1.1001))
+    rec.maintenance(now=T + timedelta(minutes=10))
+    bars = fetch_data.read_bars("EURUSD", T.date())
+    got = dict(zip([t.minute for t in bars["time_utc"]], bars["partial"]))
+    assert got == {0: False, 1: True, 6: True, 7: False, 8: False}

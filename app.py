@@ -179,12 +179,14 @@ def recent_bars() -> None:
         "Offer close": last["offer_close"],
         "Updates": last["tick_count"],
         "Spread avg": last["spread_mean"], "Spread max": last["spread_max"],
+        "Partial": ["yes" if p else "" for p in last.get("partial", [False] * len(last))],
     }), hide_index=True, column_config={
         c: st.column_config.NumberColumn(format="%.6g")
         for c in ("Bid open", "Bid high", "Bid low", "Bid close", "Offer close", "Spread avg", "Spread max")
     })
     st.caption(f"{len(bars)} bars today (UTC). A bar labelled 10:00 covers 10:00-10:01 and only "
-               "appears once it is complete (no unfinished bars).")
+               "appears once it is complete (no unfinished bars). Partial = prices were not being "
+               "received for part of that minute (outage, engine off or start-up).")
 
 
 def safety_controls() -> None:

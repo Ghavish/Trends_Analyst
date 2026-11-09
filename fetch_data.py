@@ -7,7 +7,10 @@ Recording (run by the engine, signals.py):
       columns: time_utc (IG's time), bid, offer, received_utc (laptop), is_snapshot
   * 1-minute bars      -> data/bars_1m/<INSTRUMENT>/<YYYY-MM-DD>.parquet
       columns: time_utc (bar START), bid_open/high/low/close,
-               offer_open/high/low/close, tick_count, spread_mean, spread_max
+               offer_open/high/low/close, tick_count, spread_mean, spread_max,
+               partial (True if prices were not being received for part of
+               the minute: an OUTAGE / ENGINE_OFF gap, or recording started
+               mid-minute - such a bar's high/low may be incomplete)
   * files are split at UTC midnight and rewritten every RECORDER_FLUSH_SECONDS
     (write to a temporary file, then swap it in, so a crash never leaves a
     half-written file; at most one flush interval is lost)
@@ -50,7 +53,12 @@ TICK_COLUMNS = ["time_utc", "bid", "offer", "received_utc", "is_snapshot"]
 BAR_COLUMNS = ["time_utc",
                "bid_open", "bid_high", "bid_low", "bid_close",
                "offer_open", "offer_high", "offer_low", "offer_close",
-               "tick_count", "spread_mean", "spread_max"]
+               "tick_count", "spread_mean", "spread_max", "partial"]
+
+# Gap kinds during which prices were definitely NOT being received. A bar
+# overlapping one of these is marked partial. (QUIET gaps don't count: the
+# stream was connected, the market may simply have been calm.)
+NOT_RECEIVING_GAP_KINDS = ("OUTAGE", "ENGINE_OFF")
 
 
 # --------------------------------------------------------------------------
@@ -103,11 +111,16 @@ def bar_end_utc(bar_start: datetime, minutes: int = 1) -> datetime:
     return bar_start + timedelta(minutes=minutes)
 
 
-def ticks_to_bars(ticks: pd.DataFrame, now: datetime | None = None) -> pd.DataFrame:
+def ticks_to_bars(ticks: pd.DataFrame, now: datetime | None = None,
+                  not_receiving: list[tuple[datetime, datetime | None]] | None = None,
+                  session_start: datetime | None = None) -> pd.DataFrame:
     """
     1-minute bid/offer bars from ticks, labelled by bar START (UTC).
     If `now` is given, only bars that are complete (end + grace <= now) are
     returned - never a bar that is still forming.
+    `not_receiving`: (start, end) periods when no prices were received (end
+    None = still ongoing); `session_start`: when recording started. Bars
+    overlapping either are marked partial=True.
     """
     if ticks.empty:
         return pd.DataFrame(columns=BAR_COLUMNS)
@@ -127,6 +140,18 @@ def ticks_to_bars(ticks: pd.DataFrame, now: datetime | None = None) -> pd.DataFr
     })
     bars.index.name = "time_utc"
     bars = bars.reset_index()
+    bar_start = bars["time_utc"]
+    bar_end = bar_start + pd.Timedelta(minutes=1)
+    partial = pd.Series(False, index=bars.index)
+    far_future = pd.Timestamp.max.tz_localize("UTC")
+    for start, end in not_receiving or []:
+        s = pd.Timestamp(start)
+        e = pd.Timestamp(end) if end is not None else far_future
+        partial |= (bar_start < e) & (bar_end > s)
+    if session_start is not None:
+        s = pd.Timestamp(session_start)
+        partial |= (bar_start < s) & (bar_end > s)
+    bars["partial"] = partial
     if now is not None:
         cutoff = pd.Timestamp(timeutils.ensure_utc(now)) - pd.Timedelta(
             minutes=1, seconds=config.BAR_CLOSE_GRACE_SECONDS)
@@ -142,7 +167,7 @@ class _DayBuffer:
     rows: list = field(default_factory=list)       # tuples in TICK_COLUMNS order
     keys: set = field(default_factory=set)         # (time ms, bid, offer) for duplicate checks
     dirty: bool = False                             # ticks not yet written
-    bars_written: int = -1                          # number of bars in the bar file
+    bars_written: object = None                     # fingerprint of the bars last written
 
 
 def _tick_key(time_utc: datetime, bid, offer) -> tuple:
@@ -335,18 +360,24 @@ class Recorder:
             items = [(k, b, list(b.rows), b.dirty) for k, b in self._days.items()]
             for _, b, _, _ in items:
                 b.dirty = False
+        day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo) - timedelta(days=1)
+        gaps = [g for g in db.list_gaps(since_utc=day_start, limit=1000)
+                if g["kind"] in NOT_RECEIVING_GAP_KINDS]
         for (inst, day), buf, rows, dirty in items:
             try:
                 ticks = pd.DataFrame(rows, columns=TICK_COLUMNS).sort_values("time_utc", kind="stable")
                 if dirty:
                     write_parquet_atomic(ticks, tick_file(inst, day))
                     written += 1
-                bars = ticks_to_bars(ticks, now=now)
+                periods = [(g["start_utc"], g["end_utc"]) for g in gaps if g["instrument"] == inst]
+                bars = ticks_to_bars(ticks, now=now, not_receiving=periods,
+                                     session_start=self.started_utc)
                 if len(bars) == 0 and not bar_file(inst, day).exists():
                     continue                        # no complete bar yet: don't create an empty file
-                if len(bars) != buf.bars_written:
+                fingerprint = (len(bars), int(bars["partial"].sum()), bars["tick_count"].sum())
+                if fingerprint != buf.bars_written:
                     write_parquet_atomic(bars, bar_file(inst, day))
-                    buf.bars_written = len(bars)
+                    buf.bars_written = fingerprint
                     written += 1
             except Exception as exc:
                 self.write_errors += 1
