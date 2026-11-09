@@ -22,6 +22,7 @@ truth. Personal use only; nothing here is financial advice.
 | `display.py` | Plain wording and price/spread formats used on screen (and later in alerts) |
 | `test_connection.py` | Checks the IG demo connection, shows live EUR/USD |
 | `killswitch.py` | Command-line kill switch |
+| `compare_sources.py` | Compares Dukascopy history with your IG recordings (read only) |
 | `backup.py` | Weekly backup of the IG recordings and the database to another drive |
 | `tests/` | Automated tests (`python -m pytest`) |
 
@@ -156,6 +157,24 @@ it) unless the purpose is the final evaluation; every such read is logged.
 The indices (US 500, Germany 40) are downloaded but kept out of the model
 until the comparison with IG's own prices is done
 (`config.HISTORY_APPROVED_FOR_MODEL`).
+
+## Comparing Dukascopy with IG
+
+```powershell
+python compare_sources.py                       # all instruments, every day both sources have
+python compare_sources.py --instruments US500 GER40 --save   # also saves to data\reports\
+```
+
+For each instrument, on minutes both sources have (IG partial bars left out):
+time alignment (should match best at 0 min shift), price-level gap (IG minus
+Dukascopy, overall, by hour and by day), 5-minute movement agreement and the
+IG / Dukascopy ATR ratio, spreads by hour, and bars per hour in each source.
+Times are shown in UTC and Mauritius time. The script decides nothing: the
+numbers are for you to judge before approving the indices for the model.
+
+Dukascopy days arrive 3 days late, and the history download goes from 2019
+forwards, so the recent days need their own (short) download first, e.g.
+`python fetch_data.py download --from 2026-11-09` (don't run two downloads at once).
 
 ## Weekly backup (IG recordings and database)
 
