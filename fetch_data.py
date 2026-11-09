@@ -48,6 +48,7 @@ History from Dukascopy (command line, see the bottom of this file):
     python fetch_data.py download    # everything from 2019 (resumable; Ctrl+C is safe)
     python fetch_data.py status      # what has been downloaded
     python fetch_data.py move-ticks  # move ticks to the folder set in .env (DUKASCOPY_TICKS_DIR)
+    python fetch_data.py repair-bars # rebuild month bars left out of date by a crash (download does this too)
 """
 
 from __future__ import annotations
@@ -766,6 +767,58 @@ def build_month_bars(instrument: str, year: int, month: int) -> int:
     return len(bars)
 
 
+def stale_months(instrument: str) -> list[tuple[int, int]]:
+    """
+    Months whose bar file is missing or older than the newest downloaded day
+    in that month - e.g. after a crash, a closed window or a second Ctrl+C
+    stopped the download before the bars were rebuilt. Only reads the
+    database and file dates (the tick drive isn't needed).
+    """
+    newest: dict[tuple[int, int], datetime] = {}
+    has_ticks: set[tuple[int, int]] = set()
+    for r in db.get_history_days(DUKASCOPY, instrument):
+        ym = (r["day"].year, r["day"].month)
+        if ym not in newest or r["completed_utc"] > newest[ym]:
+            newest[ym] = r["completed_utc"]
+        if r["tick_count"] > 0:
+            has_ticks.add(ym)
+    stale = []
+    for ym in sorted(has_ticks):
+        path = history_bar_file(instrument, *ym)
+        if not path.exists():
+            stale.append(ym)
+            continue
+        built = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        if built < newest[ym]:
+            stale.append(ym)
+    return stale
+
+
+def repair_month_bars(instruments: list[str] | None = None) -> dict:
+    """
+    Rebuild every stale month (see stale_months). A month whose tick file is
+    missing is reported and skipped, not allowed to stop everything.
+    Returns {instrument: {"rebuilt": [...], "failed": [...]}}.
+    """
+    require_ticks_folder()
+    out = {}
+    for inst in instruments or list(config.INSTRUMENTS):
+        res = {"rebuilt": [], "failed": []}
+        for ym in stale_months(inst):
+            label = f"{ym[0]}-{ym[1]:02d}"
+            try:
+                build_month_bars(inst, *ym)
+                res["rebuilt"].append(label)
+            except FileNotFoundError as exc:
+                res["failed"].append(label)
+                log.error("Bars for %s %s not rebuilt: %s", inst, label, exc)
+        if res["rebuilt"]:
+            log.info("%s: rebuilt bars for %d month(s) left out of date by an earlier stop: %s",
+                     inst, len(res["rebuilt"]), ", ".join(res["rebuilt"]))
+        out[inst] = res
+    return out
+
+
 def _fmt_duration(seconds: float) -> str:
     minutes = int(round(seconds / 60))
     hours, minutes = divmod(minutes, 60)
@@ -779,10 +832,12 @@ def download_history(instruments: list[str] | None = None, start: datetime | Non
     Download every not-yet-done day in [start, end) for each instrument, in
     order, then (re)build the monthly bar files of the months touched.
     Stops early if Dukascopy blocks us or DUKASCOPY_STOP_AFTER_FAILED_DAYS
-    days in a row fail. Safe to interrupt (Ctrl+C) and run again.
+    days in a row fail. Safe to interrupt (Ctrl+C) and run again; month bars
+    left out of date by an earlier hard stop are repaired first.
     """
     require_ticks_folder()
     instruments = instruments or list(config.INSTRUMENTS)
+    repaired = repair_month_bars(instruments)
     start = timeutils.ensure_utc(start or config.HISTORY_START_UTC)
     latest = default_history_end()
     end = timeutils.ensure_utc(end or latest)
@@ -791,7 +846,7 @@ def download_history(instruments: list[str] | None = None, start: datetime | Non
                     "(DUKASCOPY_LAG_DAYS = %d).", latest.date(), config.DUKASCOPY_LAG_DAYS)
         end = latest
     all_days = _days(start, end)
-    summary: dict = {"stopped": None, "instruments": {}}
+    summary: dict = {"stopped": None, "instruments": {}, "repaired": repaired}
     failures_in_a_row = 0
     for inst in instruments:
         done = {r["day"] for r in db.get_history_days(DUKASCOPY, inst, all_days[0], all_days[-1]
@@ -1030,6 +1085,10 @@ def history_status() -> list[str]:
             if missing:
                 lines.append(f"        WARNING: {len(missing)} downloaded day(s) have no tick file in the "
                              f"tick folder, e.g. {missing[0]} (wrong folder or drive?)")
+        stale = stale_months(inst)
+        if stale:
+            lines.append(f"        {len(stale)} month(s) of bars are out of date, e.g. {stale[0][0]}-{stale[0][1]:02d}: "
+                         "the next download fixes them, or run: python fetch_data.py repair-bars")
     lines.append(f"Downloads stop at {end:%Y-%m-%d} (today minus {config.DUKASCOPY_LAG_DAYS} days).")
     lines.append(f"Final-check period: {config.FINAL_CHECK_START_UTC:%Y-%m-%d} to "
                  f"{config.FINAL_CHECK_END_UTC:%Y-%m-%d} (not included); development data ends "
@@ -1101,6 +1160,7 @@ def main(argv: list[str] | None = None) -> int:
     p_dl.add_argument("--feed", type=int, choices=(1, 2), default=None)
     sub.add_parser("status", help="what has been downloaded, and the final-check settings")
     sub.add_parser("move-ticks", help="move tick files from data/dukascopy/ticks to DUKASCOPY_TICKS_DIR")
+    sub.add_parser("repair-bars", help="rebuild month bar files left out of date by a hard stop")
     args = parser.parse_args(argv)
 
     timeutils.configure_logging(log_file=config.LOGS_DIR / "history.log")
@@ -1115,6 +1175,15 @@ def _run(args) -> int:
     if args.command == "status":
         print("\n".join(history_status()))
         return 0
+    if args.command == "repair-bars":
+        res = repair_month_bars()
+        for inst, r in res.items():
+            print(f"{inst}: rebuilt {len(r['rebuilt'])} month(s)"
+                  + (f" ({', '.join(r['rebuilt'])})" if r["rebuilt"] else "")
+                  + (f"; NOT rebuilt (tick file missing): {', '.join(r['failed'])}" if r["failed"] else ""))
+        print()
+        print("\n".join(history_status()))
+        return 1 if any(r["failed"] for r in res.values()) else 0
     if args.command == "move-ticks":
         res = move_ticks()
         print(f"Moved {res['moved']} tick files ({res['bytes'] / 1e6:.1f} MB) to {config.DUKASCOPY_TICKS_DIR}.\n")

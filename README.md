@@ -139,6 +139,9 @@ python fetch_data.py status     # what has been downloaded, and where
   with a message instead of writing elsewhere.
 * Resumable: a day counts as done only when all its hours downloaded; Ctrl+C
   is safe and the same command continues. Finished days are never fetched again.
+* After a hard stop (window closed, power cut, second Ctrl+C) a month's bar
+  file may be out of date; `status` says so and the next `download` rebuilds
+  it first. `python fetch_data.py repair-bars` does only that.
 * Saturday and Sunday before 20:00 UTC are not requested (markets closed);
   the pilot downloads those hours too, to check the rule.
 * The newest 3 days are left out (Dukascopy may still be completing them).

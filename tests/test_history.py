@@ -535,3 +535,77 @@ def test_cli_reports_missing_drive(monkeypatch, tmp_path, capsys):
     _use_external(monkeypatch, tmp_path / "nowhere")
     assert fetch_data.main(["download"]) == 1
     assert "STOPPED" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# Repair of month bars left out of date by a hard stop
+# --------------------------------------------------------------------------
+@pytest.fixture
+def lag_ok(monkeypatch):
+    monkeypatch.setattr(fetch_data, "default_history_end", lambda now=None: datetime(2026, 5, 1, tzinfo=UTC))
+
+
+def test_crash_before_bars_is_repaired_by_next_download(fake_lib, lag_ok, monkeypatch):
+    # Simulate a hard stop (closed window / power cut): the days are saved,
+    # but the bars are never built because the process dies first.
+    real_build = fetch_data.build_month_bars
+    monkeypatch.setattr(fetch_data, "build_month_bars", lambda *a, **k: 0)
+    fetch_data.download_history(["EURUSD"], _d(2026, 3, 2), _d(2026, 3, 4))
+    monkeypatch.setattr(fetch_data, "build_month_bars", real_build)
+    assert not fetch_data.history_bar_file("EURUSD", 2026, 3).exists()
+    assert fetch_data.stale_months("EURUSD") == [(2026, 3)]
+    assert "out of date" in "\n".join(fetch_data.history_status())
+    # The next run has no days left to download in that range, but still repairs March.
+    calls = len(fake_lib.calls)
+    res = fetch_data.download_history(["EURUSD"], _d(2026, 3, 2), _d(2026, 3, 4))
+    assert len(fake_lib.calls) == calls                       # nothing downloaded again
+    assert res["repaired"]["EURUSD"]["rebuilt"] == ["2026-03"]
+    assert len(pd.read_parquet(fetch_data.history_bar_file("EURUSD", 2026, 3))) == 144
+    assert fetch_data.stale_months("EURUSD") == []
+    assert "out of date" not in "\n".join(fetch_data.history_status())
+
+
+def test_bars_older_than_a_newer_day_are_stale(fake_lib, lag_ok):
+    fetch_data.download_history(["EURUSD"], _d(2026, 3, 2), _d(2026, 3, 3))
+    assert fetch_data.stale_months("EURUSD") == []
+    # Pretend the old run crashed after downloading 3 March but before rebuilding:
+    # the day's record is newer than the bar file.
+    later = datetime.now(UTC) + timedelta(minutes=5)
+    fetch_data.download_day("EURUSD", date(2026, 3, 3))
+    row = db.get_history_days("dukascopy", "EURUSD", date(2026, 3, 3), date(2026, 3, 4))[0]
+    db.mark_history_day_done("dukascopy", "EURUSD", date(2026, 3, 3), row, now=later)
+    assert fetch_data.stale_months("EURUSD") == [(2026, 3)]
+    assert fetch_data.repair_month_bars(["EURUSD"])["EURUSD"]["rebuilt"] == ["2026-03"]
+    assert len(pd.read_parquet(fetch_data.history_bar_file("EURUSD", 2026, 3))) == 144
+
+
+def test_months_without_ticks_need_no_bars(fake_lib):
+    fetch_data.download_day("EURUSD", SAT)                     # weekend: no ticks, no file
+    assert fetch_data.stale_months("EURUSD") == []
+
+
+def test_repair_skips_month_with_missing_tick_file_but_continues(fake_lib, lag_ok, monkeypatch):
+    real_build = fetch_data.build_month_bars
+    monkeypatch.setattr(fetch_data, "build_month_bars", lambda *a, **k: 0)   # bars never built
+    fetch_data.download_history(["EURUSD"], _d(2026, 3, 2), _d(2026, 3, 3))
+    fetch_data.download_history(["EURUSD"], _d(2026, 4, 1), _d(2026, 4, 2))
+    monkeypatch.setattr(fetch_data, "build_month_bars", real_build)
+    fetch_data.history_tick_file("EURUSD", date(2026, 3, 2)).unlink()
+    res = fetch_data.repair_month_bars(["EURUSD"])["EURUSD"]
+    assert res == {"rebuilt": ["2026-04"], "failed": ["2026-03"]}
+
+
+def test_repair_needs_the_tick_drive(fake_lib, monkeypatch, tmp_path):
+    _use_external(monkeypatch, tmp_path / "unplugged")
+    with pytest.raises(fetch_data.TicksFolderError):
+        fetch_data.repair_month_bars(["EURUSD"])
+
+
+def test_cli_repair_bars(fake_lib, lag_ok, monkeypatch, capsys):
+    monkeypatch.setattr(fetch_data.timeutils, "configure_logging", lambda **kw: None)
+    real_build = fetch_data.build_month_bars
+    monkeypatch.setattr(fetch_data, "build_month_bars", lambda *a, **k: 0)
+    fetch_data.download_history(["GBPUSD"], _d(2026, 3, 2), _d(2026, 3, 3))
+    monkeypatch.setattr(fetch_data, "build_month_bars", real_build)
+    assert fetch_data.main(["repair-bars"]) == 0
+    assert "GBPUSD: rebuilt 1 month(s) (2026-03)" in capsys.readouterr().out
