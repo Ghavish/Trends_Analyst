@@ -1,0 +1,4 @@
+# Only used to configure pytest (no packaging).
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

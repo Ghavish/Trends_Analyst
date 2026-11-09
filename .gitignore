@@ -1,0 +1,29 @@
+# ---- Secrets: never commit ----
+.env
+.env.*
+!.env.example
+
+# ---- Data, database, models, logs (stay on your laptop only) ----
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.parquet
+models/
+*.pkl
+*.joblib
+logs/
+*.log
+
+# ---- Python / tooling ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.streamlit/secrets.toml
+.vscode/
+.idea/

@@ -1,0 +1,27 @@
+# Pinned versions (Section 12.2: official PyPI names, pinned).
+# All of these install from ready-made wheels on Windows 11 / Python 3.14
+# (checked 9 Nov 2026), so no C compiler is needed.
+#
+# Install inside the project's virtual environment:
+#     python -m pip install -r requirements.txt
+
+# --- IG connection (broker.py) ---
+trading-ig==0.0.25          # brings lightstreamer-client-lib==1.0.3 for streaming
+python-dotenv==1.2.4        # reads credentials from .env
+
+# --- Data ---
+pandas==3.1.1               # installed separately: trading-ig's optional "pandas" extra asks for <3,
+                            # but trading-ig 0.0.25's own code handles pandas 3
+numpy==2.5.4
+pyarrow==26.0.1             # Parquet files
+tzdata==2026.6              # time-zone database; Windows has none built in
+
+# --- Engine and dashboard ---
+apscheduler==3.11.3         # engine scheduling (signals.py)
+streamlit==1.67.0           # dashboard (app.py)
+plotly==7.1.0               # dashboard charts
+
+# --- Tests ---
+pytest==9.2.0
+
+# Phase 2 (added later, not needed yet): lightgbm, scikit-learn
