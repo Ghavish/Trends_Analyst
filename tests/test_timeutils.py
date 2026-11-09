@@ -166,3 +166,20 @@ def test_log_formatter_shows_utc_and_mut():
     record.created = datetime(2026, 11, 9, 11, 20, 3, tzinfo=UTC).timestamp()
     line = tu.DualTimeFormatter("%(asctime)s %(message)s").format(record)
     assert line == "2026-11-09 11:20:03 UTC (2026-11-09 15:20:03 MUT) hello"
+
+
+@pytest.mark.parametrize(
+    "ts,expected_next",
+    [
+        (datetime(2026, 1, 14, 12, 0, tzinfo=UTC), datetime(2026, 1, 14, 22, 0, tzinfo=UTC)),
+        (datetime(2026, 1, 14, 22, 0, tzinfo=UTC), datetime(2026, 1, 15, 22, 0, tzinfo=UTC)),
+        (datetime(2026, 7, 15, 12, 0, tzinfo=UTC), datetime(2026, 7, 15, 21, 0, tzinfo=UTC)),
+        # Across the US change on Sun 8 Mar 2026: a 22:00 UTC (EST) start, then the next reset is 21:00 UTC (EDT).
+        (datetime(2026, 3, 7, 12, 0, tzinfo=UTC),  datetime(2026, 3, 7, 22, 0, tzinfo=UTC)),
+        (datetime(2026, 3, 7, 23, 0, tzinfo=UTC),  datetime(2026, 3, 8, 21, 0, tzinfo=UTC)),
+        # Across the US change back on Sun 1 Nov 2026.
+        (datetime(2026, 10, 31, 23, 0, tzinfo=UTC), datetime(2026, 11, 1, 22, 0, tzinfo=UTC)),
+    ],
+)
+def test_next_trading_day_start(ts, expected_next):
+    assert tu.next_trading_day_start_utc(ts) == expected_next

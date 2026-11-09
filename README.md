@@ -83,3 +83,13 @@ python test_connection.py --search         # API allowances + epic search
 
 IG allows only one streaming connection per account at a time, so don't run
 `test_connection.py` while the engine (`signals.py`) is running.
+
+## Kill switch (works without the dashboard)
+
+```powershell
+python killswitch.py status                       # flags, whether trading is blocked, recent log
+python killswitch.py on --reason "news spike"     # stop trading; stays on until cleared
+python killswitch.py off --reason "checked"       # resume (type YES to confirm)
+python killswitch.py clear-halt --reason "fixed"  # clear an automatic halt (type YES)
+python killswitch.py log                          # every activation: time, reason, source
+```

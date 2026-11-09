@@ -107,6 +107,18 @@ def trading_day_start_utc(ts: datetime) -> datetime:
     return local_to_utc(start_day, reset, config.TRADING_DAY_RESET_TZ)
 
 
+def next_trading_day_start_utc(ts: datetime) -> datetime:
+    """
+    UTC time of the NEXT 17:00 New York reset after `ts` (e.g. when a halt
+    for the daily loss limit ends). Computed in New York local time, so it is
+    correct across daylight-saving changes.
+    """
+    ny = ZoneInfo(config.TRADING_DAY_RESET_TZ)
+    start_local_day = trading_day_start_utc(ts).astimezone(ny).date()
+    return local_to_utc(start_local_day + timedelta(days=1),
+                        time(config.TRADING_DAY_RESET_HOUR, 0), config.TRADING_DAY_RESET_TZ)
+
+
 def trading_day_label(ts: datetime) -> date:
     """
     Name of the trading day containing `ts`: the New York calendar date on
