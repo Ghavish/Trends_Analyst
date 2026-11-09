@@ -31,6 +31,19 @@ DB_PATH = DATA_DIR / "trends_analyst.db"
 # live-trading path in the code.
 ALLOWED_ACC_TYPE = "DEMO"
 
+# IG's demo REST server. broker.py checks the connection really points here.
+IG_DEMO_BASE_URL = "https://demo-api.ig.com/gateway/deal"
+
+# Your IG account type (you confirmed CFD). broker.py stops if the login
+# reports a different type (e.g. SPREADBET), because epics and sizing differ.
+EXPECTED_ACCOUNT_TYPE = "CFD"
+
+# Our own cap on IG REST requests per minute (non-trading). IG Labs' FAQ
+# (checked 9 Nov 2026) states 30 per account and 60 per app. We stay well
+# below that; live prices come from streaming, which doesn't count.
+# test_connection.py shows your API key's actual allowances.
+IG_REST_REQUESTS_PER_MINUTE = 20
+
 # --------------------------------------------------------------------------
 # Time zones (IANA names, understood by Python's zoneinfo and by pandas)
 # --------------------------------------------------------------------------
@@ -57,12 +70,14 @@ TRADING_DAY_RESET_HOUR = 17
 #
 # "group" marks correlated instruments: no two open trades may share a group
 # (EUR/USD + GBP/USD, US 500 + Germany 40). USD/JPY has its own group.
+#
+# "search" is the text sent to IG's market search to find the epic.
 INSTRUMENTS = {
-    "EURUSD": {"name": "EUR/USD",    "epic": None, "asset_class": "forex", "group": "USD_MAJORS"},
-    "GBPUSD": {"name": "GBP/USD",    "epic": None, "asset_class": "forex", "group": "USD_MAJORS"},
-    "USDJPY": {"name": "USD/JPY",    "epic": None, "asset_class": "forex", "group": "USDJPY"},
-    "US500":  {"name": "US 500",     "epic": None, "asset_class": "index", "group": "EQUITY_INDICES"},
-    "GER40":  {"name": "Germany 40", "epic": None, "asset_class": "index", "group": "EQUITY_INDICES"},
+    "EURUSD": {"name": "EUR/USD",    "search": "EUR/USD",    "epic": None, "asset_class": "forex", "group": "USD_MAJORS"},
+    "GBPUSD": {"name": "GBP/USD",    "search": "GBP/USD",    "epic": None, "asset_class": "forex", "group": "USD_MAJORS"},
+    "USDJPY": {"name": "USD/JPY",    "search": "USD/JPY",    "epic": None, "asset_class": "forex", "group": "USDJPY"},
+    "US500":  {"name": "US 500",     "search": "US 500",     "epic": None, "asset_class": "index", "group": "EQUITY_INDICES"},
+    "GER40":  {"name": "Germany 40", "search": "Germany 40", "epic": None, "asset_class": "index", "group": "EQUITY_INDICES"},
 }
 
 # --------------------------------------------------------------------------
