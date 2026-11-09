@@ -95,7 +95,9 @@ def show_market(b: broker.Broker, epic: str) -> dict:
     print(f"\n  {m['epic']}  -  {m['name']}")
     print(f"    Type / expiry          : {m['type']} / {m['expiry']}")
     print(f"    Status                 : {m['market_status']}")
-    print(f"    Bid / offer / spread   : {m['bid']} / {m['offer']} / {m['spread']}")
+    pip = pip_size(m)
+    spread = f"{m['spread'] / pip:.1f} pips" if (pip and m['spread'] is not None) else m['spread']
+    print(f"    Bid / offer / spread   : {m['bid']} / {m['offer']} / {spread}")
     print(f"    Snapshot received      : {timeutils.fmt_dual(m['received_utc'], with_date=True, seconds=True)}")
     print(f"    IG 'updateTime' (raw)  : {m['ig_update_time_raw']}   (time zone not stated in IG docs)")
     print(f"    Contract size / unit   : {m['contract_size']} / {m['unit']}")
