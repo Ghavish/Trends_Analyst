@@ -86,7 +86,7 @@ def show_search(b: broker.Broker) -> None:
                   f"{str(r['expiry'])[:7]:<7} {str(r['status'])[:9]:<9}")
 
 
-def show_market(b: broker.Broker, epic: str) -> None:
+def show_market(b: broker.Broker, epic: str) -> dict:
     m = b.get_market(epic)
 
     def rule(r):
@@ -109,6 +109,7 @@ def show_market(b: broker.Broker, epic: str) -> None:
     print(f"    Min guaranteed stop    : {rule(m['min_guaranteed_stop_distance'])}")
     print(f"    Stops/limits allowed   : {m['stops_limits_allowed']}")
     print(f"    Scaling factor         : {m['scaling_factor']}   decimal places factor: {m['decimal_places_factor']}")
+    return m
 
 
 def show_comparison(b: broker.Broker, epics: list[str]) -> None:
@@ -150,16 +151,36 @@ SHOWN_EVENTS = {"connecting", "status", "reconnect_needed", "reconnecting", "rec
                 "fatal", "test", "bad_update"}
 
 
-def stream_prices(b: broker.Broker, epic: str, seconds: int, drop_after: int | None) -> bool:
+def pip_size(market: dict) -> float | None:
+    """IG's 'onePipMeans', e.g. '0.0001 USD/EUR' -> 0.0001 (None if not a number)."""
+    try:
+        return float(str(market.get("one_pip_means")).split()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def stream_prices(b: broker.Broker, epic: str, seconds: int, drop_after: int | None,
+                  market: dict | None = None) -> bool:
     """Stream one epic for `seconds`; return True if it behaved as expected."""
     delays_ms = []
+    pip = pip_size(market or {})
+    decimals = (market or {}).get("decimal_places_factor")
+    decimals = int(decimals) if isinstance(decimals, (int, float)) else None
+
+    def price(x):
+        return "-" if x is None else (f"{x:.{decimals}f}" if decimals is not None else str(x))
 
     def on_tick(t: broker.Tick) -> None:
         delay = (t.received_utc - t.time_utc).total_seconds() * 1000
         delays_ms.append(delay)
-        spread = round(t.offer - t.bid, 6) if t.bid is not None and t.offer is not None else None
+        if t.bid is None or t.offer is None:
+            spread = "-"
+        elif pip:
+            spread = f"{(t.offer - t.bid) / pip:.1f} pips"
+        else:
+            spread = f"{t.offer - t.bid:.6g}"
         tag = "  (snapshot)" if t.is_snapshot else ""
-        print(f"  {fmt_tick_time(t.time_utc)}  bid {t.bid}  offer {t.offer}  "
+        print(f"  {fmt_tick_time(t.time_utc)}  bid {price(t.bid)}  offer {price(t.offer)}  "
               f"spread {spread}  delay {delay:.0f} ms{tag}")
 
     def on_event(kind: str, detail: str) -> None:
@@ -250,11 +271,11 @@ def main() -> int:
             show_search(b)
         else:
             print("[3] Market details ...")
-            show_market(b, args.epic)
+            market = show_market(b, args.epic)
             print("\n[4] Live prices ...")
             drop_after = 15 if args.simulate_drop else None
             seconds = max(args.seconds, 45) if args.simulate_drop else args.seconds
-            if not stream_prices(b, args.epic, seconds, drop_after):
+            if not stream_prices(b, args.epic, seconds, drop_after, market):
                 line()
                 print("Connection test FINISHED WITH PROBLEMS (see the summary above).")
                 print("If the market is closed (e.g. at the weekend), no prices arrive: try again when it is open.")
