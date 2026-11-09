@@ -105,3 +105,14 @@ It records all five instruments to `data/ticks/<INSTRUMENT>/<YYYY-MM-DD>.parquet
 UTC midnight, logs gaps and market status to the database, and writes its log
 to `logs/engine.log`. Make sure Windows syncs the clock automatically
 (Settings > Time & language > Date & time > Set time automatically).
+
+## Dashboard
+
+Start the engine in one terminal and the dashboard in a second one:
+
+```powershell
+streamlit run app.py   # opens http://localhost:8501
+```
+
+It shows engine/stream status, live prices, gaps, the latest complete 1-minute
+bars and the kill switch. It only reads data and sends requests to the engine.

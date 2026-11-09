@@ -83,6 +83,8 @@ class Engine:
                                seconds=config.ENGINE_HALT_CHECK_SECONDS, **common)
         self.scheduler.add_job(self._safe(self._process_jobs), id="jobs",
                                seconds=config.ENGINE_JOB_POLL_SECONDS, **common)
+        self.scheduler.add_job(self._safe(self._feed_status), id="feed_status",
+                               seconds=config.FEED_STATUS_SECONDS, **common)
         self.scheduler.start()
         log.info("Engine running: recording %s. Files rewritten every %d s. Ctrl+C to stop.",
                  ", ".join(config.INSTRUMENTS), config.RECORDER_FLUSH_SECONDS)
@@ -156,6 +158,10 @@ class Engine:
                  health["status"], " | ".join(parts), summary["open_gaps"],
                  summary["duplicates_dropped"],
                  f" | TRADING BLOCKED: {'; '.join(blocked)}" if blocked else "")
+
+    def _feed_status(self) -> None:
+        """Every FEED_STATUS_SECONDS: latest prices for the dashboard's live table."""
+        self.recorder.write_feed_status()
 
     def _check_halt(self) -> None:
         """Automatic-halt rules; the HALT stays on until cleared manually."""

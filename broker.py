@@ -934,7 +934,10 @@ class PriceStream:
         try:
             time_utc = timeutils.from_epoch_ms(update.getValue("UTM"))
         except (TypeError, ValueError):
-            self._emit("bad_update", f"{epic}: update without a valid UTM time, skipped")
+            self._emit("bad_update",
+                       f"{epic}: update without a valid UTM time, skipped "
+                       f"(UTM={update.getValue('UTM')!r}, BID={update.getValue('BID')!r}, "
+                       f"OFR={update.getValue('OFR')!r}, snapshot={update.isSnapshot()})")
             return
         tick = Tick(
             epic=epic,

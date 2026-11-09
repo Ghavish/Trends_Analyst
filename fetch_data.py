@@ -271,7 +271,7 @@ class Recorder:
         self._handle_status_events(status_events)
         self._check_quiet(now)
         written = self._write_files(now)
-        self._write_feed_status(now)
+        self.write_feed_status(now)
         return {"files_written": written, "duplicates_dropped": self.duplicates_dropped,
                 "write_errors": self.write_errors,
                 "open_gaps": len(self._outage_gaps) + len(self._quiet_gaps)}
@@ -360,7 +360,9 @@ class Recorder:
                 del self._days[key]
         return written
 
-    def _write_feed_status(self, now: datetime) -> None:
+    def write_feed_status(self, now: datetime | None = None) -> None:
+        """Latest price / market status per instrument -> db (for the dashboard)."""
+        now = now or self._clock()
         today = now.date()
         with self._lock:
             rows = []

@@ -177,6 +177,7 @@ MARKET_OPEN_DLG_FLAGS = ("DEAL", "DEALNOEDIT")
 # --------------------------------------------------------------------------
 ENGINE_JOB_POLL_SECONDS = 5          # how often dashboard requests are picked up
 ENGINE_HALT_CHECK_SECONDS = 60       # how often the automatic-halt rules are checked
+FEED_STATUS_SECONDS = 5              # how often latest prices are written for the dashboard
 # The engine writes a heartbeat; if it is older than this, the engine is
 # considered not running (used by the dashboard and test_connection.py).
 ENGINE_HEARTBEAT_STALE_SECONDS = 180
