@@ -72,3 +72,14 @@ Open the `Trends_Analyst` folder in VS Code, then open a terminal
 
 In VS Code, choose the `.venv` interpreter (**Ctrl+Shift+P > Python: Select
 Interpreter**) so new terminals activate it automatically.
+
+## Checking the IG connection
+
+```powershell
+python test_connection.py                  # login, EUR/USD details, 60 s of live prices
+python test_connection.py --simulate-drop  # also tests automatic reconnection
+python test_connection.py --search         # API allowances + epic search
+```
+
+IG allows only one streaming connection per account at a time, so don't run
+`test_connection.py` while the engine (`signals.py`) is running.

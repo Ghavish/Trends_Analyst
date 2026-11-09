@@ -64,20 +64,22 @@ TRADING_DAY_RESET_HOUR = 17
 # --------------------------------------------------------------------------
 # Instruments (Section 4.3)
 # --------------------------------------------------------------------------
-# "epic" is IG's identifier for each market. They are left as None until you
-# look them up on your demo account (step 2 adds a lookup helper). Code that
-# needs an epic will stop with a clear message while it is still None.
+# "epic" is IG's identifier for each market. Chosen on 9 Nov 2026 from the
+# demo account's search results (test_connection.py --market): the Mini
+# forex contracts and the $1 Cash index contracts. Same spreads as the larger
+# contracts, smaller minimum deal sizes (finer position sizing at 1% risk),
+# and both indices priced in USD (the account currency).
 #
 # "group" marks correlated instruments: no two open trades may share a group
 # (EUR/USD + GBP/USD, US 500 + Germany 40). USD/JPY has its own group.
 #
 # "search" is the text sent to IG's market search to find the epic.
 INSTRUMENTS = {
-    "EURUSD": {"name": "EUR/USD",    "search": "EUR/USD",    "epic": None, "asset_class": "forex", "group": "USD_MAJORS"},
-    "GBPUSD": {"name": "GBP/USD",    "search": "GBP/USD",    "epic": None, "asset_class": "forex", "group": "USD_MAJORS"},
-    "USDJPY": {"name": "USD/JPY",    "search": "USD/JPY",    "epic": None, "asset_class": "forex", "group": "USDJPY"},
-    "US500":  {"name": "US 500",     "search": "US 500",     "epic": None, "asset_class": "index", "group": "EQUITY_INDICES"},
-    "GER40":  {"name": "Germany 40", "search": "Germany 40", "epic": None, "asset_class": "index", "group": "EQUITY_INDICES"},
+    "EURUSD": {"name": "EUR/USD",    "search": "EUR/USD",    "epic": "CS.D.EURUSD.MINI.IP", "asset_class": "forex", "group": "USD_MAJORS"},
+    "GBPUSD": {"name": "GBP/USD",    "search": "GBP/USD",    "epic": "CS.D.GBPUSD.MINI.IP", "asset_class": "forex", "group": "USD_MAJORS"},
+    "USDJPY": {"name": "USD/JPY",    "search": "USD/JPY",    "epic": "CS.D.USDJPY.MINI.IP", "asset_class": "forex", "group": "USDJPY"},
+    "US500":  {"name": "US 500",     "search": "US 500",     "epic": "IX.D.SPTRD.IFMM.IP", "asset_class": "index", "group": "EQUITY_INDICES"},
+    "GER40":  {"name": "Germany 40", "search": "Germany 40", "epic": "IX.D.DAX.IFMS.IP", "asset_class": "index", "group": "EQUITY_INDICES"},
 }
 
 # --------------------------------------------------------------------------
@@ -113,3 +115,26 @@ MAX_POSITION_LOTS = {
 # All orders must be sent with SL and TP attached at IG, so positions stay
 # protected even if the engine stops (enforced in broker.py in Phase 3).
 REQUIRE_SL_AND_TP_ON_ORDERS = True
+
+# --------------------------------------------------------------------------
+# Automatic halt (you chose these on 9 Nov 2026)
+# --------------------------------------------------------------------------
+# The engine sets a halt flag (stops trading until you clear it manually)
+# when any of these is reached. Price recording keeps trying to reconnect.
+HALT_AFTER_FAILED_RECONNECTS = 5       # failed stream reconnection attempts in a row
+HALT_AFTER_DISCONNECTS = 10            # stream disconnections ...
+HALT_DISCONNECT_WINDOW_MINUTES = 60    # ... within this many minutes
+HALT_AFTER_API_ERRORS = 5              # failed IG REST requests in a row (token
+                                       # expiries are fixed by re-login, not counted)
+
+# --------------------------------------------------------------------------
+# Live price stream (broker.PriceStream)
+# --------------------------------------------------------------------------
+# The Lightstreamer library first tries to recover a dropped connection by
+# itself. If it is still not streaming after this many seconds, or IG closes
+# the session, we log in again (fresh tokens) and open a new connection.
+STREAM_RECOVERY_GRACE_SECONDS = 60
+# A (re)connection that hasn't started streaming after this long has failed.
+STREAM_CONNECT_TIMEOUT_SECONDS = 30
+# Waits before successive reconnection attempts (the last value repeats).
+STREAM_RECONNECT_DELAYS_SECONDS = (5, 10, 20, 40, 60)

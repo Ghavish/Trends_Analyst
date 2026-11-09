@@ -1,28 +1,39 @@
 """
-test_connection.py - checks the IG demo connection. Display only: nothing
-is saved, and no orders are placed.
+test_connection.py - checks the IG demo connection and shows live prices.
+Display only: nothing is saved, and no orders are placed.
 
 Usage (inside the activated .venv, from the project folder):
 
     python test_connection.py
         1. reads .env and confirms it is set to DEMO
         2. logs in and shows your demo account (balance, currency)
-        3. shows the request allowances IG reports for your API key
-        4. searches IG for the five instruments so you can choose their epics
-        5. shows contract details for any epics already filled in config.py
+        3. shows EUR/USD contract details and a snapshot
+        4. streams live EUR/USD prices for 60 seconds (UTC and MUT times)
 
-    python test_connection.py --market EPIC
-        shows contract details and a price snapshot for one epic
+    python test_connection.py --seconds 300
+        stream for longer
 
-    python test_connection.py --market EPIC1 EPIC2 ...
-        compares several epics side by side (spread, contract size, minimum deal)
+    python test_connection.py --simulate-drop
+        drops the stream connection after 15 seconds on purpose, to watch the
+        automatic reconnection (fresh login, new connection, prices resume)
 
-Step 3 will add live streaming EUR/USD prices.
+    python test_connection.py --epic IX.D.DAX.IFMS.IP
+        stream another market instead of EUR/USD
+
+    python test_connection.py --search
+        API allowances + IG search for the five instruments (epic look-up)
+
+    python test_connection.py --market EPIC [EPIC ...]
+        contract details for one epic, or a side-by-side comparison of several
+
+IG allows only ONE streaming connection per account at a time. Later, don't
+run this while the engine (signals.py) is running.
 """
 
 import argparse
 import logging
 import sys
+import time
 
 import broker
 import config
@@ -127,9 +138,84 @@ def show_comparison(b: broker.Broker, epics: list[str]) -> None:
         print(f"  (snapshots taken around {timeutils.fmt_dual(received, with_date=True)})")
 
 
+def fmt_tick_time(ts) -> str:
+    """'11:25:03.412 UTC (15:25:03.412 MUT)' - milliseconds matter for ticks."""
+    mut = timeutils.to_mut(ts)
+    ms = ts.microsecond // 1000
+    return f"{ts:%H:%M:%S}.{ms:03d} UTC ({mut:%H:%M:%S}.{ms:03d} MUT)"
+
+
+SHOWN_EVENTS = {"connecting", "status", "reconnect_needed", "reconnecting", "reconnected",
+                "reconnect_failed", "server_error", "subscription_error", "lost_updates",
+                "fatal", "test", "bad_update"}
+
+
+def stream_prices(b: broker.Broker, epic: str, seconds: int, drop_after: int | None) -> bool:
+    """Stream one epic for `seconds`; return True if it behaved as expected."""
+    delays_ms = []
+
+    def on_tick(t: broker.Tick) -> None:
+        delay = (t.received_utc - t.time_utc).total_seconds() * 1000
+        delays_ms.append(delay)
+        spread = round(t.offer - t.bid, 6) if t.bid is not None and t.offer is not None else None
+        tag = "  (snapshot)" if t.is_snapshot else ""
+        print(f"  {fmt_tick_time(t.time_utc)}  bid {t.bid}  offer {t.offer}  "
+              f"spread {spread}  delay {delay:.0f} ms{tag}")
+
+    def on_event(kind: str, detail: str) -> None:
+        if kind in SHOWN_EVENTS:
+            print(f"  [{kind}] {detail}")
+
+    print(f"  Streaming {epic} for {seconds} s"
+          + (f", dropping the connection on purpose after {drop_after} s" if drop_after else "")
+          + "  (Ctrl+C to stop early)")
+    stream = broker.PriceStream(b, [epic], on_tick=on_tick, on_event=on_event)
+    stream.start()
+    started = time.monotonic()
+    dropped = False
+    try:
+        while time.monotonic() - started < seconds:
+            time.sleep(0.5)
+            if drop_after and not dropped and time.monotonic() - started >= drop_after:
+                stream.simulate_drop()
+                dropped = True
+    except KeyboardInterrupt:
+        print("  (stopped early by you)")
+    health = stream.health()
+    halt = stream.halt_reason()
+    stream.stop()
+
+    line()
+    print("  Stream summary")
+    print(f"    Price updates received : {health['tick_count']}")
+    print(f"    Connections opened     : {health['connections_opened']}")
+    print(f"    Logins this run        : {b.login_count}")
+    print(f"    Streaming at the end   : {health['streaming']}  (status {health['status']})")
+    if delays_ms:
+        ordered = sorted(delays_ms)
+        median = ordered[len(ordered) // 2]
+        print(f"    Delay IG time -> laptop: median {median:.0f} ms, min {ordered[0]:.0f}, max {ordered[-1]:.0f}")
+        print("      (a few hundred ms is normal; HOURS would mean a time-zone problem;")
+        print("       negative means the laptop clock is behind - Windows: Settings > Time > Sync now)")
+    if health["last_error"]:
+        print(f"    Last error             : {health['last_error']}")
+    print(f"    Automatic-halt check   : {halt or 'OK (no halt condition)'}")
+
+    ok = health["tick_count"] > 0 and halt is None
+    if drop_after and dropped:
+        ok = ok and health["connections_opened"] >= 2 and health["streaming"]
+    return ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check the IG demo connection.")
     parser.add_argument("--market", nargs="+", metavar="EPIC", help="show details for these epics only")
+    parser.add_argument("--search", action="store_true", help="API allowances and epic search")
+    parser.add_argument("--epic", default=config.INSTRUMENTS["EURUSD"]["epic"],
+                        help="market to stream (default: EUR/USD from config.py)")
+    parser.add_argument("--seconds", type=int, default=60, help="how long to stream (default 60)")
+    parser.add_argument("--simulate-drop", action="store_true",
+                        help="drop the stream after 15 s to test automatic reconnection")
     parser.add_argument("--debug", action="store_true", help="show detailed log messages")
     args = parser.parse_args()
 
@@ -157,20 +243,22 @@ def main() -> int:
         elif args.market:
             print("[3] Market details ...")
             show_market(b, args.market[0])
-        else:
+        elif args.search:
             print("[3] API allowances for this key ...")
             show_allowances(b)
-
             print("[4] Searching for the five instruments ...")
             show_search(b)
-
-            configured = [i["epic"] for i in config.INSTRUMENTS.values() if i["epic"]]
-            print("\n[5] Details for epics set in config.py ...")
-            if not configured:
-                print("  None set yet. Pick the epics from the lists above, check them with")
-                print("  'python test_connection.py --market EPIC', then fill them in config.py.")
-            for epic in configured:
-                show_market(b, epic)
+        else:
+            print("[3] Market details ...")
+            show_market(b, args.epic)
+            print("\n[4] Live prices ...")
+            drop_after = 15 if args.simulate_drop else None
+            seconds = max(args.seconds, 45) if args.simulate_drop else args.seconds
+            if not stream_prices(b, args.epic, seconds, drop_after):
+                line()
+                print("Connection test FINISHED WITH PROBLEMS (see the summary above).")
+                print("If the market is closed (e.g. at the weekend), no prices arrive: try again when it is open.")
+                return 1
 
         line()
         print("Connection test finished OK.")

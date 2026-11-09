@@ -8,6 +8,7 @@ request rate limiter.
 """
 
 import os
+import types
 
 import pytest
 from trading_ig.rest import IGException, TokenInvalidException
@@ -44,12 +45,14 @@ class FakeIG:
         self.login_error = None
         self.accounts_errors = []   # exceptions to raise on successive fetch_accounts calls
         self.create_calls = 0
+        self.session = types.SimpleNamespace(headers={})
         FakeIG.instances.append(self)
 
     def create_session(self, version="2"):
         self.create_calls += 1
         if self.login_error:
             raise self.login_error
+        self.session.headers.update({"CST": "cst-token", "X-SECURITY-TOKEN": "xst-token"})
         return self.login_response
 
     def fetch_accounts(self):
@@ -230,3 +233,39 @@ def test_rate_limiter_waits_when_full():
     now[0] = 10.0
     rl.wait()                      # 4th call within the minute must wait until t=60
     assert sleeps == [pytest.approx(50.0)]
+
+
+# --------------------------------------------------------------------------
+# Streaming login details and the API-error halt rule
+# --------------------------------------------------------------------------
+def test_stream_login_details_follow_ig_guide():
+    b = make_broker()
+    b.connect()
+    endpoint, user, password = b.stream_login_details()
+    assert endpoint == GOOD_LOGIN["lightstreamerEndpoint"]
+    assert user == "ABC12"
+    assert password == "CST-cst-token|XST-xst-token"
+
+
+def test_halt_after_consecutive_api_errors():
+    b = make_broker()
+    b.connect()
+    ig = FakeIG.instances[0]
+    ig.accounts_errors = [Exception("error.unexpected")] * config.HALT_AFTER_API_ERRORS
+    for _ in range(config.HALT_AFTER_API_ERRORS - 1):
+        with pytest.raises(broker.BrokerError):
+            b.get_account()
+    assert b.halt_reason() is None
+    with pytest.raises(broker.BrokerError):
+        b.get_account()
+    assert f"{config.HALT_AFTER_API_ERRORS} IG requests failed in a row" in b.halt_reason()
+    b.get_account()                     # a success resets the count
+    assert b.halt_reason() is None
+
+
+def test_token_expiry_is_not_counted_as_an_error():
+    b = make_broker()
+    b.connect()
+    FakeIG.instances[0].accounts_errors = [TokenInvalidException()]
+    b.get_account()
+    assert b.consecutive_api_errors == 0
