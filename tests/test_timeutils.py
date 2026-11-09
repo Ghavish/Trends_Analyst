@@ -158,3 +158,11 @@ def test_from_epoch_ms():
 def test_trading_day(ts, expected_start, expected_label):
     assert tu.trading_day_start_utc(ts) == expected_start
     assert tu.trading_day_label(ts) == expected_label
+
+
+def test_log_formatter_shows_utc_and_mut():
+    import logging
+    record = logging.LogRecord("x", logging.INFO, __file__, 1, "hello", None, None)
+    record.created = datetime(2026, 11, 9, 11, 20, 3, tzinfo=UTC).timestamp()
+    line = tu.DualTimeFormatter("%(asctime)s %(message)s").format(record)
+    assert line == "2026-11-09 11:20:03 UTC (2026-11-09 15:20:03 MUT) hello"

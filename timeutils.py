@@ -13,6 +13,7 @@ needs the "tzdata" package (listed in requirements.txt), because Windows has
 no built-in IANA time-zone database.
 """
 
+import logging
 from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -115,3 +116,24 @@ def trading_day_label(ts: datetime) -> date:
     start = trading_day_start_utc(ts)
     ny = ZoneInfo(config.TRADING_DAY_RESET_TZ)
     return start.astimezone(ny).date() + timedelta(days=1)
+
+
+# --------------------------------------------------------------------------
+# Log messages with UTC and Mauritius time
+# --------------------------------------------------------------------------
+class DualTimeFormatter(logging.Formatter):
+    """Log formatter whose timestamp is 'YYYY-MM-DD HH:MM:SS UTC (... MUT)'."""
+
+    def formatTime(self, record, datefmt=None):
+        ts = datetime.fromtimestamp(record.created, tz=UTC)
+        return fmt_dual(ts, with_date=True, seconds=True)
+
+
+def configure_logging(level: int = logging.INFO) -> None:
+    """Send log messages to the console with UTC + MUT timestamps."""
+    handler = logging.StreamHandler()
+    handler.setFormatter(DualTimeFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.handlers[:] = [handler]
+    root.setLevel(level)
+    logging.getLogger("trading_ig").setLevel(logging.WARNING)   # never log usernames

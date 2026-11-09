@@ -11,8 +11,11 @@ Usage (inside the activated .venv, from the project folder):
         4. searches IG for the five instruments so you can choose their epics
         5. shows contract details for any epics already filled in config.py
 
-    python test_connection.py --market EPIC [EPIC ...]
-        shows contract details and a price snapshot for the given epic(s)
+    python test_connection.py --market EPIC
+        shows contract details and a price snapshot for one epic
+
+    python test_connection.py --market EPIC1 EPIC2 ...
+        compares several epics side by side (spread, contract size, minimum deal)
 
 Step 3 will add live streaming EUR/USD prices.
 """
@@ -35,7 +38,8 @@ def line(char="-"):
 def show_account(b: broker.Broker) -> None:
     info = b.session_info
     acc = b.get_account()
-    print(f"  Environment     : {info['environment']}")
+    env = info["environment"] or "not reported by IG"
+    print(f"  Environment     : {env}  (server: {info['server']})")
     print(f"  Account         : {broker.mask(acc['account_id'])}  ({acc['account_type']}, {acc['status']})")
     print(f"  Currency        : {acc['currency']}")
     print(f"  Balance         : {acc['balance']}")
@@ -53,7 +57,8 @@ def show_allowances(b: broker.Broker) -> None:
     print(f"  Account requests / minute      : {allow['account_overall_per_min']}")
     print(f"  Account trading requests / min : {allow['account_trading_per_min']}")
     print(f"  Application requests / minute  : {allow['application_overall_per_min']}")
-    print(f"  Historical data points / minute: {allow['historical_data_per_min']}")
+    print(f"  Historical data points         : {allow['historical_data_per_min']}"
+          "  (IG reference says per minute, IG FAQ says per week; we treat it as per week)")
     print(f"  Streaming subscriptions        : {allow['concurrent_subscriptions']}")
     print(f"  (our own cap in config.py      : {config.IG_REST_REQUESTS_PER_MINUTE} requests / minute)")
 
@@ -95,17 +100,40 @@ def show_market(b: broker.Broker, epic: str) -> None:
     print(f"    Scaling factor         : {m['scaling_factor']}   decimal places factor: {m['decimal_places_factor']}")
 
 
+def show_comparison(b: broker.Broker, epics: list[str]) -> None:
+    """Two lines per epic, to compare candidate markets side by side."""
+    def rule(r):
+        return f"{r['value']} {r['unit']}" if r else "-"
+
+    received = None
+    print(f"  {'EPIC':<22} {'NAME':<28} {'STATUS':<10} {'BID':>11} {'OFFER':>11} {'SPREAD':>9}")
+    print(f"  {'':<22} {'contract size / unit':<28} {'pip value':<18} {'min deal':<12} {'min stop':<12} {'ccy'}")
+    print("  " + "-" * 92)
+    for epic in epics:
+        try:
+            m = b.get_market(epic)
+        except broker.BrokerError as exc:
+            print(f"  {epic:<22} ERROR: {exc}")
+            continue
+        received = m["received_utc"]
+        ccy = ",".join(c["code"] for c in m["currencies"] if c["is_default"]) or \
+            ",".join(c["code"] for c in m["currencies"])
+        print(f"  {m['epic']:<22} {str(m['name'])[:28]:<28} {str(m['market_status'])[:10]:<10} "
+              f"{str(m['bid']):>11} {str(m['offer']):>11} {str(m['spread']):>9}")
+        print(f"  {'':<22} {(str(m['contract_size']) + ' / ' + str(m['unit']))[:28]:<28} "
+              f"{str(m['value_of_one_pip'])[:18]:<18} {rule(m['min_deal_size'])[:12]:<12} "
+              f"{rule(m['min_stop_or_limit_distance'])[:12]:<12} {ccy}")
+    if received:
+        print(f"  (snapshots taken around {timeutils.fmt_dual(received, with_date=True)})")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check the IG demo connection.")
     parser.add_argument("--market", nargs="+", metavar="EPIC", help="show details for these epics only")
     parser.add_argument("--debug", action="store_true", help="show detailed log messages")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.WARNING,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    logging.getLogger("trading_ig").setLevel(logging.WARNING)   # never log usernames
+    timeutils.configure_logging(logging.DEBUG if args.debug else logging.WARNING)
 
     line("=")
     print("IG DEMO connection test   " + timeutils.fmt_dual(timeutils.now_utc(), with_date=True, seconds=True))
@@ -123,10 +151,12 @@ def main() -> int:
         print("  OK: logged in")
         show_account(b)
 
-        if args.market:
+        if args.market and len(args.market) > 1:
+            print("[3] Market comparison ...")
+            show_comparison(b, args.market)
+        elif args.market:
             print("[3] Market details ...")
-            for epic in args.market:
-                show_market(b, epic)
+            show_market(b, args.market[0])
         else:
             print("[3] API allowances for this key ...")
             show_allowances(b)

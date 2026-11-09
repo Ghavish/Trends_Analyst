@@ -291,7 +291,8 @@ class Broker:
             self.session_info = {
                 "account_id": resp.get("currentAccountId"),
                 "account_type": resp.get("accountType"),
-                "environment": resp.get("reroutingEnvironment"),
+                "environment": resp.get("reroutingEnvironment"),   # may be None (see above)
+                "server": ig.BASE_URL,
                 "currency": resp.get("currencyIsoCode"),
                 "lightstreamer_endpoint": resp.get("lightstreamerEndpoint"),
                 "dealing_enabled": resp.get("dealingEnabled"),
@@ -311,7 +312,9 @@ class Broker:
         if env is not None and str(env).upper() != config.ALLOWED_ACC_TYPE:
             raise BrokerConfigError(f"IG reports environment {env!r}, not DEMO. Stopping.")
         if env is None:
-            log.warning("IG login response has no reroutingEnvironment; relying on the demo URL check.")
+            # Seen on the real demo login (9 Nov 2026): IG documents this field
+            # but did not send it. The demo-URL check in connect() is the guard.
+            log.info("IG login response has no reroutingEnvironment; demo server confirmed by URL.")
 
         acc_type = resp.get("accountType")
         if acc_type != config.EXPECTED_ACCOUNT_TYPE:
