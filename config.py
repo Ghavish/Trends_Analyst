@@ -287,6 +287,27 @@ HISTORY_APPROVED_FOR_MODEL = {
 }
 
 # --------------------------------------------------------------------------
+# Model data: bars, ATR, costs (Phase 2 step 2; features.py, labels.py)
+# --------------------------------------------------------------------------
+# Decisions are made on 5-minute bars built from the 1-minute bars (Section 7.11).
+DECISION_BAR_MINUTES = 5
+# ATR length in bars, fixed rather than tuned (you decided 15 Nov 2026).
+ATR_BARS = 14
+# A "gap": more than this many minutes without data while the market should
+# be open. Nothing uses a previous close across a gap, and no trade is taken
+# in the first BARS_AFTER_GAP_NO_TRADE decision bars after one (or after the weekend).
+GAP_MINUTES = 15
+BARS_AFTER_GAP_NO_TRADE = 12
+# Pip size per instrument (forex convention; IG's own "one pip" is stored by
+# the engine in the database). Indices are added once confirmed.
+PIP_SIZE = {"EURUSD": 0.0001, "GBPUSD": 0.0001, "USDJPY": 0.01}
+# Costs assumed in labels and backtests (decided 15 Nov 2026): Dukascopy mid
+# prices plus IG's spread (fixed for now; median 0.89 pips in the first
+# comparison), and extra slippage when a stop loss is hit.
+IG_SPREAD_PIPS = {"EURUSD": 0.9}
+SL_SLIPPAGE_PIPS = {"EURUSD": 0.25}
+
+# --------------------------------------------------------------------------
 # Backups (backup.py) - run weekly by you
 # --------------------------------------------------------------------------
 # The IG recordings can't be downloaded again, so backup.py copies them and

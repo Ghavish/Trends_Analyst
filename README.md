@@ -16,7 +16,8 @@ truth. Personal use only; nothing here is financial advice.
 | `broker.py` | The only file that talks to IG (login, streaming, reconnection; orders later) |
 | `db.py` | The only file that talks to SQLite |
 | `fetch_data.py` | Records the live IG feed; downloads Dukascopy history; the final-check lock |
-| `features.py`, `labels.py`, `train.py`, `backtest.py` | Model pipeline (Phase 2) |
+| `features.py` | Bars (5-, 15-, 60-minute), ATR, no-lookahead alignment; the ATR report; features (step 2b) |
+| `labels.py`, `train.py`, `backtest.py` | Model pipeline (Phase 2, next steps) |
 | `signals.py` | The engine (background process) |
 | `app.py` | The dashboard (Streamlit) |
 | `display.py` | Plain wording and price/spread formats used on screen (and later in alerts) |
@@ -175,6 +176,19 @@ numbers are for you to judge before approving the indices for the model.
 Dukascopy days arrive 3 days late, and the history download goes from 2019
 forwards, so the recent days need their own (short) download first, e.g.
 `python fetch_data.py download --from 2026-11-09` (don't run two downloads at once).
+
+## ATR report (choosing TP and SL distances)
+
+```powershell
+python features.py atr-report --save        # EUR/USD, 2019 to the end of the development period
+```
+
+Typical ATR(14) of 5-minute, 15-minute and 1-hour bars by hour of day (in
+pips, UTC and Mauritius time), how much of a 1x ATR stop IG's spread would
+cost, how often 1x ATR is below the 10x-spread floor, how far price travels
+in the next 4 hours, ATR by year, and unusually quiet weekdays (holidays).
+Longer bars are only used once complete (no lookahead); ATR doesn't reach
+across gaps such as weekends.
 
 ## Weekly backup (IG recordings and database)
 
