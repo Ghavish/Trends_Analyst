@@ -227,3 +227,96 @@ def test_cli_end_to_end(monkeypatch, capsys):
     assert tr.main(["walkforward"]) == 0
     out = capsys.readouterr().out
     assert "Walk-forward: EURUSD, 2 rounds" in out and "Models:" in out
+
+
+# --------------------------------------------------------------------------
+# Diagnostics on saved predictions (no retraining)
+# --------------------------------------------------------------------------
+def _entry(h_mut, k=0):
+    """An entry time at hour h (Mauritius) on a fixed day; k shifts it by 5 minutes."""
+    return pd.Timestamp("2025-03-05", tz="UTC") + pd.Timedelta(hours=h_mut - 4, minutes=5 * k)
+
+
+def test_direction_test_compares_with_same_hours_and_ignores_timeouts():
+    rows = []
+    # Hour 17, buy: 10 decided entries, 4 TP (40%); the 4 with p >= 0.35 contain 3 TP (75%).
+    for k in range(10):
+        rows.append({"round": 1, "side": "buy", "hour": 17, "p": 0.5 if k < 4 else 0.2,
+                     "outcome": "TP" if k in (0, 1, 2, 5) else "SL"})
+    # Timeouts with high p must not count.
+    rows += [{"round": 1, "side": "buy", "hour": 17, "p": 0.9, "outcome": "TIMEOUT"}] * 5
+    st = pd.DataFrame(rows)
+    st["win"] = (st["outcome"] == "TP").astype(int)
+    dt = tr.direction_test(st, 0.35)
+    r = dt.iloc[0]
+    assert r["decided_top"] == 4 and r["tp_rate"] == pytest.approx(0.75)
+    assert r["no_model_rate"] == pytest.approx(0.4) and r["difference"] == pytest.approx(0.35)
+    assert r["z"] == pytest.approx(0.35 / np.sqrt(0.4 * 0.6 / 4))
+
+
+def test_direction_test_weights_no_model_rate_by_the_top_bands_hours():
+    rows = []
+    for k in range(10):                      # hour 17: TP share 50%
+        rows.append({"round": 1, "side": "sell", "hour": 17, "p": 0.1, "outcome": "TP" if k < 5 else "SL"})
+    for k in range(10):                      # hour 20: TP share 10%; top entries only here
+        rows.append({"round": 1, "side": "sell", "hour": 20, "p": 0.4 if k < 5 else 0.1,
+                     "outcome": "TP" if k == 0 else "SL"})
+    st = pd.DataFrame(rows)
+    st["win"] = (st["outcome"] == "TP").astype(int)
+    r = tr.direction_test(st, 0.35).iloc[0]
+    assert r["no_model_rate"] == pytest.approx(0.1)        # the hour-20 rate, not the overall 30%
+    assert r["tp_rate"] == pytest.approx(0.2)
+
+
+def test_side_agreement():
+    n = 200
+    rng = np.random.default_rng(0)
+    entries = [_entry(17 + (k % 4), k) for k in range(n)]
+    x = rng.random(n)
+    same = pd.DataFrame({"round": 1, "entry_utc": entries, "buy_p": x, "sell_p": x})
+    opp = pd.DataFrame({"round": 1, "entry_utc": entries, "buy_p": x, "sell_p": 1 - x})
+    assert tr.side_agreement(same)["corr"].iloc[0] == pytest.approx(1.0)
+    assert tr.side_agreement(opp)["corr"].iloc[0] == pytest.approx(-1.0)
+    both = pd.DataFrame({"round": 1, "entry_utc": entries[:4], "buy_p": [0.5, 0.5, 0.1, 0.1],
+                         "sell_p": [0.5, 0.1, 0.5, 0.1]})
+    r = tr.side_agreement(both, 0.35).iloc[0]
+    assert r["both_top"] == pytest.approx(0.25) and r["one_top"] == pytest.approx(0.5)
+
+
+def test_ev_vs_realised():
+    st = pd.DataFrame({"ev": [0.15, 0.12, -0.05], "result_r": [-1.0, 1.5, 0.2]})
+    t = tr.ev_vs_realised(st)
+    top = t.loc[[i for i in t.index if i.left == 0.1][0]]
+    assert top["entries"] == 2 and top["predicted_ev"] == pytest.approx(0.135) and top["realised_r"] == pytest.approx(0.25)
+
+
+def test_hour_baseline_uses_calibration_rates_by_hour(run):
+    pred = run.predictions[run.predictions["variant"] == "A"]
+    hb = tr.hour_baseline_losses(pred, DF, ROUNDS)
+    assert len(hb) == len(ROUNDS)
+    # Recompute round 1 by hand.
+    _, cal, _ = tr.split(DF, ROUNDS[0])
+    pr = pred[pred["round"] == 1]
+    ys, ps = [], []
+    for side in ("buy", "sell"):
+        by_h = cal.groupby(tr._hour_mut(cal["entry_utc"]))[f"{side}_win"].mean()
+        ps.append(by_h.reindex(tr._hour_mut(pr["entry_utc"])).fillna(cal[f"{side}_win"].mean()).to_numpy())
+        ys.append(pr[f"{side}_win"].to_numpy())
+    assert hb.iloc[0]["no_model_by_hour"] == pytest.approx(tr.log_loss(np.concatenate(ys), np.concatenate(ps)))
+    assert hb.iloc[0]["model"] == pytest.approx(run.losses.loc[1, "A"])
+
+
+def test_diagnose_report_sections(run):
+    text = "\n".join(tr.diagnose(run.predictions.reset_index(), DF, ROUNDS))
+    for part in ("1. Log loss: model vs 'no model'", "beats 'no model by hour' in",
+                 "2. Predicted EV vs R actually obtained", "3a. Direction test", "top band above no model in",
+                 "all periods by band", "3b. Do buy and sell probabilities move together"):
+        assert part in text, part
+
+
+def test_cli_diagnose_after_walkforward(monkeypatch, capsys):
+    test_cli_end_to_end(monkeypatch, capsys)
+    assert tr.main(["diagnose"]) == 0
+    out = capsys.readouterr().out
+    assert "3a. Direction test" in out and "Saved to" in out
+    assert len(list((config.DATA_DIR / "reports").glob("diagnose_EURUSD_*.txt"))) == 1

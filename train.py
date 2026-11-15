@@ -3,7 +3,8 @@ train.py - LightGBM with probability calibration, judged by walk-forward
 testing only (plan Sections 7.6, 7.9, 7.10). Settings in config.py
 (decided 15 Nov 2026; fixed, not tuned).
 
-    python train.py walkforward --save    # EUR/USD: all variants, all rounds, full report
+    python train.py walkforward    # EUR/USD: all variants, all rounds, full report
+    python train.py diagnose       # diagnostics on the saved test predictions (no retraining)
 
 How one walk-forward round works:
   1. Train on everything before the calibration period (expanding window).
@@ -475,19 +476,219 @@ def save_run(res: RunResult, instrument: str, meta: dict, text: str) -> Path:
     return run_dir
 
 
+# --------------------------------------------------------------------------
+# Diagnostics on the SAVED test predictions (no retraining)
+# --------------------------------------------------------------------------
+# "Top bands": the probabilities where signals come from. Fixed on 15 Nov 2026
+# BEFORE looking at these diagnostics: an EV of +0.10 R starts at p of about
+# 0.35. The 40%+ bands are shown for information only.
+DIAG_TOP_P = 0.35
+DIAG_INFO_P = 0.40
+EV_BANDS = (-np.inf, -0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, np.inf)
+
+
+def _hour_mut(entry_utc) -> np.ndarray:
+    return pd.to_datetime(entry_utc, utc=True).dt.tz_convert(config.TZ_MAURITIUS).dt.hour.to_numpy()
+
+
+def stack_sides(pred: pd.DataFrame) -> pd.DataFrame:
+    """One row per (bar, direction): p, ev, outcome, win, result_r, entry hour."""
+    parts = []
+    for side in SIDES:
+        parts.append(pd.DataFrame({
+            "round": pred["round"].to_numpy(), "side": side, "hour": _hour_mut(pred["entry_utc"]),
+            "p": pred[f"{side}_p"].to_numpy(), "ev": pred[f"{side}_ev"].to_numpy(),
+            "outcome": pred[f"{side}_outcome"].to_numpy(), "win": pred[f"{side}_win"].to_numpy(),
+            "result_r": pred[f"{side}_result_r"].to_numpy()}))
+    return pd.concat(parts, ignore_index=True)
+
+
+def hour_baseline_losses(pred: pd.DataFrame, df: pd.DataFrame, rounds: list) -> pd.DataFrame:
+    """Per round: log loss of the model vs 'no model' (calibration-period win
+    rate) vs 'no model by entry hour' (calibration-period win rate per hour and direction)."""
+    rows = []
+    for rnd in rounds:
+        pr = pred[pred["round"] == rnd.number]
+        if len(pr) == 0:
+            continue
+        _, cal, _ = split(df, rnd)
+        cal_h = _hour_mut(cal["entry_utc"])
+        hours = _hour_mut(pr["entry_utc"])
+        y, p_model, p_flat, p_hour = [], [], [], []
+        for side in SIDES:
+            rate = float(cal[f"{side}_win"].mean())
+            by_h = pd.Series(cal[f"{side}_win"].to_numpy()).groupby(cal_h).mean()
+            y.append(pr[f"{side}_win"].to_numpy())
+            p_model.append(pr[f"{side}_p"].to_numpy())
+            p_flat.append(np.full(len(pr), rate))
+            p_hour.append(by_h.reindex(hours).fillna(rate).to_numpy())
+        y = np.concatenate(y)
+        rows.append({"round": rnd.number, "period": rnd.label(),
+                     "model": log_loss(y, np.concatenate(p_model)),
+                     "no_model": log_loss(y, np.concatenate(p_flat)),
+                     "no_model_by_hour": log_loss(y, np.concatenate(p_hour))})
+    return pd.DataFrame(rows)
+
+
+def ev_vs_realised(stacked: pd.DataFrame) -> pd.DataFrame:
+    """Predicted EV against the R actually obtained, in EV bands (both directions)."""
+    band = pd.cut(stacked["ev"], EV_BANDS, right=False)
+    return stacked.groupby(band, observed=True).agg(entries=("ev", "size"), predicted_ev=("ev", "mean"),
+                                                    realised_r=("result_r", "mean"))
+
+
+def direction_test(stacked: pd.DataFrame, top_p: float = DIAG_TOP_P) -> pd.DataFrame:
+    """
+    (a) Timeouts left out: the TP share of decided trades (TP or SL) among
+    entries with p >= top_p, against the share that ALL decided entries at
+    the same entry hours and direction had in the same period (no model).
+    """
+    rows = []
+    for rn, g in stacked.groupby("round"):
+        d = g[g["outcome"].isin(["TP", "SL"])]
+        rate = d.groupby(["side", "hour"])["win"].mean()                  # no model, same period
+        top = d[d["p"] >= top_p]
+        n = len(top)
+        if n == 0:
+            rows.append({"round": rn, "decided_top": 0, "tp_rate": np.nan, "no_model_rate": np.nan,
+                         "difference": np.nan, "z": np.nan})
+            continue
+        expected = rate.reindex(pd.MultiIndex.from_arrays([top["side"], top["hour"]])).to_numpy()
+        e = float(expected.mean())
+        r = float(top["win"].mean())
+        se = np.sqrt(np.mean(expected * (1 - expected)) / n)
+        rows.append({"round": rn, "decided_top": n, "tp_rate": r, "no_model_rate": e,
+                     "difference": r - e, "z": (r - e) / se if se > 0 else np.nan})
+    return pd.DataFrame(rows)
+
+
+def band_table(stacked: pd.DataFrame, band: float = config.CALIBRATION_BAND) -> pd.DataFrame:
+    """All periods pooled: decided TP share by probability band vs the hour-matched no-model share."""
+    d = stacked[stacked["outcome"].isin(["TP", "SL"])].copy()
+    rate = d.groupby(["round", "side", "hour"])["win"].transform("mean")   # no model, same period/hour/side
+    d["expected"] = rate
+    d["band"] = np.floor(d["p"] / band) * band
+    return d.groupby("band").agg(decided=("win", "size"), tp_rate=("win", "mean"),
+                                 no_model_rate=("expected", "mean"))
+
+
+def side_agreement(pred: pd.DataFrame, top_p: float = DIAG_TOP_P) -> pd.DataFrame:
+    """(b) How closely the buy and sell probabilities move together on the same bars."""
+    rows = []
+    hours = _hour_mut(pred["entry_utc"])
+    for rn, idx in pd.Series(np.arange(len(pred))).groupby(pred["round"].to_numpy()):
+        g = pred.iloc[idx.to_numpy()]
+        h = hours[idx.to_numpy()]
+        b, s_ = g["buy_p"], g["sell_p"]
+        # the same after removing each entry hour's average (is it more than time of day?)
+        rb = b - b.groupby(h).transform("mean").to_numpy()
+        rs = s_ - s_.groupby(h).transform("mean").to_numpy()
+        both = (b >= top_p) & (s_ >= top_p)
+        one = (b >= top_p) ^ (s_ >= top_p)
+        rows.append({"round": rn, "corr": b.corr(s_), "rank_corr": b.corr(s_, method="spearman"),
+                     "corr_within_hour": rb.corr(rs), "both_top": float(both.mean()),
+                     "one_top": float(one.mean())})
+    return pd.DataFrame(rows)
+
+
+def diagnose(pred: pd.DataFrame, df: pd.DataFrame, rounds: list) -> list[str]:
+    variants = [v for v in config.VARIANTS if v in set(pred["variant"])]
+    lines = [f"Diagnostics on saved test predictions (no retraining). 'Top' = p >= {100 * DIAG_TOP_P:.0f}% "
+             f"(fixed in advance: where signals come from).", ""]
+    lines.append("1. Log loss: model vs 'no model' (one rate) vs 'no model by entry hour' "
+                 "(rates per hour and direction, calibration period)")
+    for v in variants:
+        hb = hour_baseline_losses(pred[pred["variant"] == v], df, rounds)
+        beat = int((hb["model"] < hb["no_model_by_hour"]).sum())
+        lines.append(f"  Variant {v}: beats 'no model by hour' in {beat} of {len(hb)} periods")
+        for _, r in hb.iterrows():
+            lines.append(f"    round {int(r['round'])} ({r['period']}): model {r['model']:.4f}  "
+                         f"no model {r['no_model']:.4f}  no model by hour {r['no_model_by_hour']:.4f}")
+    lines.append("")
+    lines.append("2. Predicted EV vs R actually obtained (all entries, both directions, all test periods)")
+    for v in variants:
+        t = ev_vs_realised(stack_sides(pred[pred["variant"] == v]))
+        lines.append(f"  Variant {v}:   EV band        entries  predicted  realised")
+        for band, r in t.iterrows():
+            lines.append(f"    {str(band):>14} {int(r['entries']):>9} {r['predicted_ev']:>+10.3f} {r['realised_r']:>+9.3f}")
+    lines.append("")
+    lines.append("3a. Direction test, timeouts left out: TP share of decided top-band entries vs the share of")
+    lines.append("    ALL decided entries at the same hours and direction in the same period (no model)")
+    for v in variants:
+        st = stack_sides(pred[pred["variant"] == v])
+        dt = direction_test(st)
+        valid = dt.dropna(subset=["difference"])
+        beat = int((valid["difference"] > 0).sum())
+        clear = int((valid["z"] >= 2).sum())
+        empty = len(dt) - len(valid)
+        lines.append(f"  Variant {v}: top band above no model in {beat} of {len(dt)} periods "
+                     f"({clear} by at least 2 standard errors)"
+                     + (f"; {empty} period(s) had no decided top-band entries" if empty else ""))
+        for _, r in dt.iterrows():
+            if r["decided_top"] == 0:
+                lines.append(f"    round {int(r['round'])}: no decided top-band entries")
+                continue
+            lines.append(f"    round {int(r['round'])}: {int(r['decided_top']):>5} decided  TP {100 * r['tp_rate']:5.1f}%  "
+                         f"no model {100 * r['no_model_rate']:5.1f}%  difference {100 * r['difference']:+5.1f} points  "
+                         f"(z {r['z']:+.1f})")
+        info = direction_test(st, DIAG_INFO_P).dropna(subset=["difference"])
+        lines.append(f"    (information: p >= {100 * DIAG_INFO_P:.0f}% above no model in "
+                     f"{int((info['difference'] > 0).sum())} of {len(dt)} periods)")
+        bt = band_table(st)
+        lines.append(f"    all periods by band:  band     decided    TP   no model")
+        for b, r in bt.iterrows():
+            lines.append(f"      {100 * b:3.0f}-{100 * (b + config.CALIBRATION_BAND):3.0f}% {int(r['decided']):>10} "
+                         f"{100 * r['tp_rate']:5.1f}% {100 * r['no_model_rate']:6.1f}%")
+    lines.append("")
+    lines.append("3b. Do buy and sell probabilities move together on the same bars?")
+    lines.append("    (positive = both high at the same time: 'will price move enough', not 'which way')")
+    for v in variants:
+        sa = side_agreement(pred[pred["variant"] == v])
+        lines.append(f"  Variant {v}: average correlation {sa['corr'].mean():+.2f}, within the same entry hour "
+                     f"{sa['corr_within_hour'].mean():+.2f}; bars with BOTH >= {100 * DIAG_TOP_P:.0f}%: "
+                     f"{100 * sa['both_top'].mean():.1f}%, only one: {100 * sa['one_top'].mean():.1f}%")
+        for _, r in sa.iterrows():
+            lines.append(f"    round {int(r['round'])}: corr {r['corr']:+.2f}  rank {r['rank_corr']:+.2f}  "
+                         f"within hour {r['corr_within_hour']:+.2f}  both top {100 * r['both_top']:4.1f}%  "
+                         f"one top {100 * r['one_top']:4.1f}%")
+    return lines
+
+
+def latest_predictions(instrument: str) -> Path:
+    files = sorted((config.DATA_DIR / "walkforward").glob(f"{instrument}_*_predictions.parquet"))
+    if not files:
+        raise FileNotFoundError("no saved walk-forward predictions: run  python train.py walkforward")
+    return files[-1]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Walk-forward training and testing.")
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("walkforward", help="all variants, all rounds, report (models and predictions saved)")
-    p.add_argument("--instrument", default="EURUSD", choices=list(config.IG_SPREAD_PIPS))
-    p.add_argument("--save", action="store_true", help="(kept for consistency: the report is always saved)")
+    sub.add_parser("walkforward", help="all variants, all rounds, report (models and predictions saved)")
+    p = sub.add_parser("diagnose", help="diagnostics on the saved test predictions (no retraining)")
+    p.add_argument("--predictions", type=Path, default=None, help="predictions file (default: the latest)")
+    for sp in sub.choices.values():
+        sp.add_argument("--instrument", default="EURUSD", choices=list(config.IG_SPREAD_PIPS))
     args = parser.parse_args(argv)
     timeutils.configure_logging()
     try:
         df, groups, meta = load_dataset(args.instrument)
+        if args.command == "diagnose":
+            path = args.predictions or latest_predictions(args.instrument)
+            pred = pd.read_parquet(path)
     except (FileNotFoundError, fetch_data.HistoryAccessError) as exc:
         print(f"STOPPED: {exc}")
         return 1
+    if args.command == "diagnose":
+        rounds = schedule(pd.Timestamp(fetch_data.development_end_utc()))
+        text = "\n".join([f"Predictions: {path.name}"] + diagnose(pred, df, rounds))
+        print(text)
+        reports = config.DATA_DIR / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        out = reports / f"diagnose_{args.instrument}_{timeutils.now_utc():%Y-%m-%d_%H%M}UTC.txt"
+        out.write_text(text + "\n", encoding="utf-8")
+        print(f"\nSaved to {out}")
+        return 0
     res = run_walkforward(df, groups)
     text = "\n".join(report(res, args.instrument))
     print(text)

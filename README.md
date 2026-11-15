@@ -7,6 +7,12 @@ confidence and position size, shown on a laptop dashboard.
 The project plan (*AI Trend Analyst: Project Plan*) is the single source of
 truth. Personal use only; nothing here is financial advice.
 
+## Method-change log
+
+Any change to how the model is built, judged or traded after test results
+have been seen is recorded in [METHOD_CHANGES.md](METHOD_CHANGES.md), with
+the reason, so the number of attempts stays visible.
+
 ## Pending ideas
 
 Three candidate ideas (opening-range features, risk checks in one place, a
@@ -235,6 +241,7 @@ checks they are identical to the full-data values.
 python labels.py build              # once (or after label settings change)
 python features.py build            # once (or after feature settings change)
 python train.py walkforward         # about 1-3 minutes
+python train.py diagnose            # diagnostics on the saved test predictions (no retraining)
 ```
 
 Eight rounds: train on everything before, calibrate on the next 6 months
