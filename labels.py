@@ -77,15 +77,7 @@ def settings(instrument: str) -> dict:
 # --------------------------------------------------------------------------
 # Candidate entries
 # --------------------------------------------------------------------------
-def _ns(times) -> np.ndarray:
-    """UTC times -> int64 nanoseconds (pandas may store other units; never mix them)."""
-    return pd.DatetimeIndex(times).as_unit("ns").asi8
-
-
-def _local_time(index: pd.DatetimeIndex, tz: str, hm: tuple[int, int]) -> pd.DatetimeIndex:
-    """For each UTC time, that calendar day's hh:mm in zone `tz`, as UTC."""
-    local = index.tz_convert(tz)
-    return (local.normalize() + pd.Timedelta(hours=hm[0], minutes=hm[1])).tz_convert("UTC")
+_ns = ft.ns
 
 
 def candidates(b1: pd.DataFrame, instrument: str) -> tuple[pd.DataFrame, dict]:
@@ -131,15 +123,11 @@ def candidates(b1: pd.DataFrame, instrument: str) -> tuple[pd.DataFrame, dict]:
     e = entry[keep]
     atr_k = atr_h[keep]
     sl_dist = np.maximum(config.SL_ATR_MULTIPLE * atr_k, floor)
-    close_by = np.minimum.reduce([
-        _ns((e + pd.Timedelta(hours=config.MAX_HOLD_HOURS))),
-        _ns(_local_time(e, config.TZ_MAURITIUS, config.CLOSE_BY_MUT)),
-        _ns(_local_time(e, config.TZ_NEW_YORK, config.ROLLOVER_CUTOFF_NY)),
-    ])
+    close_by = ft.close_by_times(e)
     cand = pd.DataFrame({
         "signal_bar_utc": base.index[keep],
         "entry_utc": e,
-        "close_by_utc": pd.to_datetime(close_by, utc=True),
+        "close_by_utc": close_by,
         "atr_1h": atr_k,
         "sl_dist": sl_dist,
         "tp_dist": sl_dist * config.TP_ATR_MULTIPLE / config.SL_ATR_MULTIPLE,

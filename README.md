@@ -23,7 +23,7 @@ reached and confirmed.
 | `broker.py` | The only file that talks to IG (login, streaming, reconnection; orders later) |
 | `db.py` | The only file that talks to SQLite |
 | `fetch_data.py` | Records the live IG feed; downloads Dukascopy history; the final-check lock |
-| `features.py` | Bars (5-, 15-, 60-minute), ATR, no-lookahead alignment; the ATR report; features (step 2b) |
+| `features.py` | Bars, ATR, no-lookahead alignment, the ATR report, and the model's 51 features in three groups (base, candles, 1-hour trend) |
 | `labels.py` | Triple-barrier labels (buy and sell) for every entry in your window; label report |
 | `train.py`, `backtest.py` | Model pipeline (Phase 2, next steps) |
 | `signals.py` | The engine (background process) |
@@ -213,6 +213,20 @@ TP and SL in the same minute counts as SL. No entries on 24 Dec - 1 Jan,
 NYSE / London holidays or NYSE early-close days, in the first hour after a
 gap, or across a data gap. Saved to `data\datasets\EURUSD_labels_v1.parquet`
 with its settings in a `.json` file next to it. All settings are in `config.py`.
+
+## Features
+
+```powershell
+python features.py build --save   # EUR/USD, 2019 to the end of the development period
+python features.py describe       # summary again, from the saved file
+```
+
+One row per 5-minute bar completing in your entry window (after 14 days of
+warm-up), saved to `data\datasets\EURUSD_features_v1.parquet` (settings and
+feature groups in the `.json` next to it). Labels are a separate file; the
+two join on `signal_bar_utc`. Every feature uses only bars complete at the
+decision time: a test recomputes them on data cut off at random times and
+checks they are identical to the full-data values.
 
 ## Weekly backup (IG recordings and database)
 

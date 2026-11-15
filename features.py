@@ -1,8 +1,8 @@
 """
-features.py - bars, ATR and (step 2b) the model's features, calculated from
-completed bars only (no lookahead).
+features.py - bars, ATR and the model's features, calculated from completed
+bars only (no lookahead).
 
-So far (Phase 2 step 2a):
+Building blocks (step 2a):
   * resample_bars()   5-, 15-, 60-minute bid/offer bars from 1-minute bars,
                       labelled by START (a 10:00 5-minute bar covers 10:00-10:05
                       and is complete at 10:05)
@@ -12,9 +12,26 @@ So far (Phase 2 step 2a):
   * align_completed() puts a longer timeframe's value (e.g. 1-hour ATR) next to
                       each 5-minute bar, using only longer bars already
                       COMPLETE when that 5-minute bar completes
-  * the ATR report:   python features.py atr-report [--instrument EURUSD] [--save]
+  * close_by_times()  when a trade must be closed (shared with labels.py)
 
-History is read through fetch_data.load_history_1m(), with the development
+The features (step 2b), compute_features(), in three groups:
+  * base      time and sessions (London / New York local clocks), minutes
+              until the close-by time, volatility (5-min / 1-hour ATR, each vs
+              its usual level at that time of day over the previous 20 days
+              with data), momentum, distance from 20/50-bar EMAs, day structure
+              (trading day from 17:00 New York)
+  * candles   candle shape, the two bars before, engulfing / pin / doji /
+              inside / outside flags, distance to confirmed 5-minute swings
+  * trend_1h  1-hour trend from completed hours: changes over 1/4/12/24 hours,
+              EMAs and slope, position in the 24-hour range, confirmed swings
+Distances are in 1-hour ATRs (the unit of TP and SL). The candles and
+trend_1h groups can be switched off per model variant (step 2c).
+
+    python features.py atr-report --save   # typical ATR by hour vs the IG spread
+    python features.py build --save        # EUR/USD features -> data/datasets/
+    python features.py describe            # summary of the saved features
+
+History is read through fetch_data.load_history_1m() with the development
 purpose, so the final-check period stays locked.
 """
 
@@ -23,6 +40,7 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -107,6 +125,256 @@ def align_completed(values: pd.Series, values_minutes: int, base_index: pd.Datet
                           "value": values.to_numpy()}).dropna()
     merged = pd.merge_asof(left, right, on="ready", direction="backward")
     return pd.Series(merged["value"].to_numpy(), index=base_index, name=values.name)
+
+
+def ns(times) -> np.ndarray:
+    """UTC times -> int64 nanoseconds (pandas may store other units; never mix them)."""
+    return pd.DatetimeIndex(times).as_unit("ns").asi8
+
+
+def local_time_utc(index: pd.DatetimeIndex, tz: str, hm: tuple[int, int]) -> pd.DatetimeIndex:
+    """For each UTC time, that calendar day's hh:mm in zone `tz`, as UTC."""
+    local = pd.DatetimeIndex(index).tz_convert(tz)
+    return (local.normalize() + pd.Timedelta(hours=hm[0], minutes=hm[1])).tz_convert("UTC")
+
+
+def close_by_times(entries) -> pd.DatetimeIndex:
+    """When a trade entered at each time must be closed: the earliest of entry +
+    MAX_HOLD_HOURS, CLOSE_BY_MUT and ROLLOVER_CUTOFF_NY (shared by labels and features)."""
+    e = pd.DatetimeIndex(entries)
+    t = np.minimum.reduce([ns(e + pd.Timedelta(hours=config.MAX_HOLD_HOURS)),
+                           ns(local_time_utc(e, config.TZ_MAURITIUS, config.CLOSE_BY_MUT)),
+                           ns(local_time_utc(e, config.TZ_NEW_YORK, config.ROLLOVER_CUTOFF_NY))])
+    return pd.DatetimeIndex(pd.to_datetime(t, utc=True))
+
+
+def in_entry_window(ready: pd.DatetimeIndex) -> np.ndarray:
+    """True where a bar completing at `ready` is inside your entry window (MUT)."""
+    mut = pd.DatetimeIndex(ready).tz_convert(config.TZ_MAURITIUS)
+    hm = mut.hour * 60 + mut.minute
+    first = config.ENTRY_FIRST_MUT[0] * 60 + config.ENTRY_FIRST_MUT[1]
+    last = config.ENTRY_LAST_MUT[0] * 60 + config.ENTRY_LAST_MUT[1]
+    return np.asarray((hm >= first) & (hm <= last))
+
+
+# --------------------------------------------------------------------------
+# Features (Phase 2 step 2b) - every value uses only bars complete at the
+# decision time (the close of the 5-minute signal bar). A truncation test
+# (tests/test_features.py) checks this: features computed on data cut off at
+# a random time equal the full-data values at that time.
+# --------------------------------------------------------------------------
+FEATURES_VERSION = 1
+
+
+def _usual(values: pd.Series, n_days: int) -> pd.Series:
+    """
+    Median of `values` at the same time of day (5-minute slot, UTC) over the
+    previous n_days days that have a value there; no-entry days (holidays,
+    24 Dec - 1 Jan) don't count. Today is never included. NaN until n_days exist.
+    """
+    idx = values.index
+    day = idx.normalize()
+    slot = idx.hour * 60 + idx.minute
+    days = pd.DatetimeIndex(day.unique()).sort_values()
+    holiday = np.array([timeutils.no_entry_reason(d.date()) is not None for d in days])
+    table = (pd.DataFrame({"day": day, "slot": slot, "v": values.to_numpy()})
+             .pivot(index="day", columns="slot", values="v").reindex(days))   # one row per day
+    table[holiday] = np.nan
+    usual = np.full(table.shape, np.nan)
+    for j, col in enumerate(table.columns):
+        x = table[col].dropna()                                    # days with a value in this slot
+        med = x.rolling(n_days, min_periods=n_days).median()       # includes that day ...
+        usual[:, j] = med.reindex(days).ffill().shift(1).to_numpy()   # ... so use it from the next day
+    return pd.Series(usual[days.get_indexer(day), table.columns.get_indexer(slot)], index=idx)
+
+
+def _confirmed_swings(high: pd.Series, low: pd.Series, k: int) -> tuple[pd.Series, pd.Series]:
+    """
+    Latest confirmed swing high and low. A swing high is a bar whose high is
+    above the k bars before AND the k bars after it, so it is only known k
+    bars later - and that is when it is used (no lookahead).
+    """
+    def side(x: pd.Series, sign: int) -> pd.Series:
+        y = sign * x
+        before = y.shift(1).rolling(k, min_periods=k).max()
+        after = y[::-1].shift(1).rolling(k, min_periods=k).max()[::-1]
+        is_swing = (y > before) & (y > after)
+        return x.where(is_swing).shift(k).ffill()
+    return side(high, 1), side(low, -1)
+
+
+def _by_atr(x, atr_1h):
+    return x / atr_1h
+
+
+def compute_features(b1: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, list[str]]]:
+    """
+    Features for every 5-minute bar (indexed by bar START; the decision is
+    made when the bar completes). b1: 1-minute bars indexed by start.
+    Returns (features, {group: [columns]}): groups "base", "candles", "trend_1h".
+    """
+    minutes = config.DECISION_BAR_MINUTES
+    base = resample_bars(b1, minutes)
+    m = mid(base)
+    idx = base.index
+    ready = idx + pd.Timedelta(minutes=minutes)
+    o, h, l, c = m["open"], m["high"], m["low"], m["close"]
+    hourly = mid(resample_bars(b1, 60))
+    atr_hourly = atr(hourly, 60)
+    a1 = align_completed(atr_hourly, 60, idx, minutes)          # the unit for all distances
+    a5 = atr(m, minutes)
+    f = pd.DataFrame(index=idx)
+    groups: dict[str, list[str]] = {"base": [], "candles": [], "trend_1h": []}
+
+    def add(group, name, values):
+        f[name] = np.asarray(values, dtype=float)
+        groups[group].append(name)
+
+    # ---- time and sessions (market-local clocks) ----
+    lon = ready.tz_convert(config.TZ_LONDON)
+    nyc = ready.tz_convert(config.TZ_NEW_YORK)
+    add("base", "london_minute_of_day", lon.hour * 60 + lon.minute)
+    add("base", "ny_minute_of_day", nyc.hour * 60 + nyc.minute)
+    add("base", "weekday", ready.tz_convert(config.TZ_MAURITIUS).day_of_week)
+    open_flags = {}
+    for name, (tz, start, end) in config.SESSIONS.items():
+        loc = ready.tz_convert(tz)
+        mins = loc.hour * 60 + loc.minute
+        s0, s1 = start[0] * 60 + start[1], end[0] * 60 + end[1]
+        add("base", f"min_since_{name}_open", mins - s0)
+        open_flags[name] = (mins >= s0) & (mins < s1)
+        add("base", f"{name}_open", open_flags[name])
+    add("base", "overlap_open", open_flags["london"] & open_flags["new_york"])
+    add("base", "minutes_to_close_by", (ns(close_by_times(ready)) - ns(ready)) / 60e9)
+
+    # ---- volatility ----
+    add("base", "atr5_to_atr1h", a5 / a1)
+    add("base", "atr1h_vs_usual", a1 / _usual(a1, config.USUAL_ATR_DAYS))
+    add("base", "atr5_vs_usual", a5 / _usual(a5, config.USUAL_ATR_DAYS))
+    add("base", "bar_range_atr", _by_atr(h - l, a1))
+
+    # ---- momentum ----
+    for n in config.MOMENTUM_BARS:
+        add("base", f"ret_{n}", _by_atr(c - c.shift(n), a1))
+    for span in config.EMA_SPANS:
+        add("base", f"dist_ema{span}", _by_atr(c - c.ewm(span=span, adjust=False).mean(), a1))
+
+    # ---- day structure (the trading day starts at 17:00 New York) ----
+    tday = (idx.tz_convert(config.TZ_NEW_YORK) - pd.Timedelta(hours=config.TRADING_DAY_RESET_HOUR)
+            ).tz_localize(None).normalize()
+    g = m.groupby(tday)
+    day_open = g["open"].transform("first")
+    day_hi, day_lo = g["high"].cummax(), g["low"].cummin()
+    daily = g.agg(high=("high", "max"), low=("low", "min"))
+    prev = daily.shift(1).reindex(tday)
+    add("base", "dist_day_open", _by_atr(c - day_open, a1))
+    add("base", "dist_prev_day_high", _by_atr(c - prev["high"].to_numpy(), a1))
+    add("base", "dist_prev_day_low", _by_atr(c - prev["low"].to_numpy(), a1))
+    add("base", "day_range_position", (c - day_lo) / (day_hi - day_lo).replace(0, np.nan))
+
+    # ---- candlestick group (switchable) ----
+    rng = (h - l).replace(0, np.nan)
+    body = c - o
+    upper, lower = h - np.maximum(o, c), np.minimum(o, c) - l
+    add("candles", "body_atr", _by_atr(body, a1))
+    add("candles", "upper_wick_atr", _by_atr(upper, a1))
+    add("candles", "lower_wick_atr", _by_atr(lower, a1))
+    add("candles", "close_position", (c - l) / rng)
+    for lag in (1, 2):
+        add("candles", f"body_atr_lag{lag}", _by_atr(body, a1).shift(lag))
+        add("candles", f"close_position_lag{lag}", ((c - l) / rng).shift(lag))
+    pb, po, pc, ph, pl = body.shift(1), o.shift(1), c.shift(1), h.shift(1), l.shift(1)
+    add("candles", "engulfing_bull", (pb < 0) & (body > 0) & (o <= pc) & (c >= po))
+    add("candles", "engulfing_bear", (pb > 0) & (body < 0) & (o >= pc) & (c <= po))
+    absb = body.abs()
+    add("candles", "pin_bull", (lower >= config.PIN_MIN_WICK_TO_BODY * absb) & (lower >= config.PIN_MIN_WICK_SHARE * rng))
+    add("candles", "pin_bear", (upper >= config.PIN_MIN_WICK_TO_BODY * absb) & (upper >= config.PIN_MIN_WICK_SHARE * rng))
+    add("candles", "doji", absb <= config.DOJI_MAX_BODY_SHARE * rng)
+    add("candles", "inside_bar", (h < ph) & (l > pl))
+    add("candles", "outside_bar", (h > ph) & (l < pl))
+    sw_hi, sw_lo = _confirmed_swings(h, l, config.SWING_BARS_5M)
+    add("candles", "dist_swing_high", _by_atr(c - sw_hi, a1))
+    add("candles", "dist_swing_low", _by_atr(c - sw_lo, a1))
+
+    # ---- 1-hour trend group (switchable; completed hours only) ----
+    hc = hourly["close"]
+    hf = pd.DataFrame(index=hourly.index)
+    for n in config.TREND_1H_HOURS:
+        hf[f"h_ret_{n}"] = (hc - hc.shift(n)) / atr_hourly
+    emas = {span: hc.ewm(span=span, adjust=False).mean() for span in config.EMA_SPANS}
+    for span, e in emas.items():
+        hf[f"h_dist_ema{span}"] = (hc - e) / atr_hourly
+    fast = emas[config.EMA_SPANS[0]]
+    hf[f"h_ema{config.EMA_SPANS[0]}_slope"] = (fast - fast.shift(1)) / atr_hourly
+    n = config.RANGE_1H_HOURS
+    hi_n = hourly["high"].rolling(n, min_periods=n).max()
+    lo_n = hourly["low"].rolling(n, min_periods=n).min()
+    hf[f"h_range{n}_position"] = (hc - lo_n) / (hi_n - lo_n).replace(0, np.nan)
+    hsw_hi, hsw_lo = _confirmed_swings(hourly["high"], hourly["low"], config.SWING_BARS_1H)
+    hf["h_dist_swing_high"] = (hc - hsw_hi) / atr_hourly
+    hf["h_dist_swing_low"] = (hc - hsw_lo) / atr_hourly
+    for col in hf.columns:
+        add("trend_1h", col, align_completed(hf[col], 60, idx, minutes))
+    return f, groups
+
+
+def feature_file(instrument: str) -> Path:
+    return config.DATASETS_DIR / f"{instrument}_features_v{FEATURES_VERSION}.parquet"
+
+
+def feature_settings() -> dict:
+    names = ("DECISION_BAR_MINUTES", "ATR_BARS", "GAP_MINUTES", "USUAL_ATR_DAYS", "MOMENTUM_BARS",
+             "EMA_SPANS", "SWING_BARS_5M", "SWING_BARS_1H", "TREND_1H_HOURS", "RANGE_1H_HOURS",
+             "SESSIONS", "DOJI_MAX_BODY_SHARE", "PIN_MIN_WICK_TO_BODY", "PIN_MIN_WICK_SHARE",
+             "FEATURE_WARMUP_DAYS", "ENTRY_FIRST_MUT", "ENTRY_LAST_MUT", "CLOSE_BY_MUT",
+             "MAX_HOLD_HOURS", "ROLLOVER_CUTOFF_NY", "TRADING_DAY_RESET_HOUR")
+    return {"features_version": FEATURES_VERSION, **{k.lower(): getattr(config, k) for k in names}}
+
+
+def window_rows(feats: pd.DataFrame) -> pd.DataFrame:
+    """Rows whose bar completes inside your entry window, after the warm-up."""
+    ready = feats.index + pd.Timedelta(minutes=config.DECISION_BAR_MINUTES)
+    start = feats.index.min() + pd.Timedelta(days=config.FEATURE_WARMUP_DAYS)
+    keep = in_entry_window(ready) & np.asarray(feats.index >= start)
+    out = feats[keep].copy()
+    out.index.name = "signal_bar_utc"
+    return out
+
+
+def build_and_save(instrument: str) -> dict:
+    import json
+    start, end = config.HISTORY_START_UTC, fetch_data.development_end_utc()
+    bars = fetch_data.load_history_1m(instrument, start, end, fetch_data.PURPOSE_DEVELOPMENT)
+    feats, groups = compute_features(to_indexed(bars))
+    rows = window_rows(feats)
+    path = feature_file(instrument)
+    fetch_data.write_parquet_atomic(rows.reset_index(), path, compression="zstd")
+    meta = {"settings": feature_settings(), "groups": groups, "instrument": instrument,
+            "start_utc": start.isoformat(), "end_utc": end.isoformat(), "rows": len(rows),
+            "created_utc": timeutils.now_utc().isoformat()}
+    path.with_suffix(".json").write_text(json.dumps(meta, indent=2, default=list), encoding="utf-8")
+    return meta
+
+
+def describe(instrument: str) -> list[str]:
+    import json
+    path = feature_file(instrument)
+    if not path.exists():
+        return ["No features yet: run  python features.py build"]
+    df = pd.read_parquet(path)
+    meta = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+    lines = [f"Features: {instrument}, {len(df):,} rows (entry window only, after "
+             f"{config.FEATURE_WARMUP_DAYS} days of warm-up), version {meta['settings']['features_version']}",
+             "Distances in 1-hour ATRs. 'present' = share of rows with a value.", ""]
+    for group, cols in meta["groups"].items():
+        lines.append(f"[{group}] {len(cols)} features")
+        lines.append(f"  {'feature':<26} {'present':>8} {'5%':>9} {'median':>9} {'95%':>9}")
+        for col in cols:
+            x = df[col]
+            q = x.quantile([0.05, 0.5, 0.95])
+            lines.append(f"  {col:<26} {100 * x.notna().mean():>7.1f}% {q[0.05]:>9.3g} {q[0.5]:>9.3g} {q[0.95]:>9.3g}")
+        lines.append("")
+    return lines
 
 
 # --------------------------------------------------------------------------
@@ -206,32 +474,48 @@ def _parse_day(text: str) -> datetime:
     return datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
 
+def _save_report(text: str, name: str) -> None:
+    folder = config.DATA_DIR / "reports"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{name}_{timeutils.now_utc():%Y-%m-%d_%H%M}UTC.txt"
+    path.write_text(text + "\n", encoding="utf-8")
+    print(f"\nSaved to {path}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Features and reports for the model.")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("atr-report", help="typical ATR by hour vs the IG spread (to choose TP / SL)")
-    p.add_argument("--instrument", default="EURUSD", choices=list(config.IG_SPREAD_PIPS))
     p.add_argument("--from", dest="start", type=_parse_day, default=None,
                    help="first UTC day (default: start of the history)")
     p.add_argument("--to", dest="end", type=_parse_day, default=None,
                    help="day AFTER the last one (default: end of the development period)")
-    p.add_argument("--save", action="store_true", help="also save the report in data/reports/")
+    for name, text in (("build", "make the features (development period) and describe them"),
+                       ("describe", "describe the saved features")):
+        sub.add_parser(name, help=text)
+    for sp in sub.choices.values():
+        sp.add_argument("--instrument", default="EURUSD", choices=list(config.IG_SPREAD_PIPS))
+        sp.add_argument("--save", action="store_true", help="also save the report in data/reports/")
     args = parser.parse_args(argv)
-    start = args.start or config.HISTORY_START_UTC
-    end = args.end or fetch_data.development_end_utc()
     try:
-        lines = atr_report(args.instrument, start, end)
+        if args.command == "atr-report":
+            start = args.start or config.HISTORY_START_UTC
+            end = args.end or fetch_data.development_end_utc()
+            lines = atr_report(args.instrument, start, end)
+            name = f"atr_report_{args.instrument}"
+        else:
+            if args.command == "build":
+                meta = build_and_save(args.instrument)
+                print(f"Saved {meta['rows']:,} rows to {feature_file(args.instrument)}\n")
+            lines = describe(args.instrument)
+            name = f"features_{args.instrument}"
     except fetch_data.HistoryAccessError as exc:
         print(f"STOPPED: {exc}")
         return 1
     text = "\n".join(lines)
     print(text)
     if args.save:
-        folder = config.DATA_DIR / "reports"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"atr_report_{args.instrument}_{timeutils.now_utc():%Y-%m-%d_%H%M}UTC.txt"
-        path.write_text(text + "\n", encoding="utf-8")
-        print(f"\nSaved to {path}")
+        _save_report(text, name)
     return 0
 
 

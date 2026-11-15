@@ -336,6 +336,33 @@ SKIP_NYSE_EARLY_CLOSES = True
 DATASETS_DIR = DATA_DIR / "datasets"   # labels and features (Parquet + settings .json)
 
 # --------------------------------------------------------------------------
+# Features (features.py) - decided 15 Nov 2026
+# --------------------------------------------------------------------------
+# Distances are divided by the same 1-hour ATR that sets TP and SL.
+# "Usual ATR": the median ATR at the same time of day over the previous
+# USUAL_ATR_DAYS days that have data (no-entry days don't count); empty until
+# that many days exist.
+USUAL_ATR_DAYS = 20
+MOMENTUM_BARS = (1, 3, 6, 12, 24)        # price change over these many 5-minute bars
+EMA_SPANS = (20, 50)                     # exponential moving averages (bars)
+SWING_BARS_5M = 6                        # a swing high/low beats 6 bars each side; known 6 bars later
+SWING_BARS_1H = 2                        # the same on 1-hour bars (1-hour trend group)
+TREND_1H_HOURS = (1, 4, 12, 24)          # 1-hour trend group: price change over these many hours
+RANGE_1H_HOURS = 24                      # position within the last 24 hours' range
+# Sessions (local time, so daylight saving is handled): used for the session
+# flags and "minutes since the open". Forex convention, 08:00-17:00 local.
+SESSIONS = {
+    "london": (TZ_LONDON, (8, 0), (17, 0)),
+    "new_york": (TZ_NEW_YORK, (8, 0), (17, 0)),
+}
+# Candlestick flag definitions (5-minute mid bars; "body" = close - open):
+DOJI_MAX_BODY_SHARE = 0.1                # doji: body at most 10% of the bar's range
+PIN_MIN_WICK_TO_BODY = 2.0               # pin bar: the long wick at least 2x the body ...
+PIN_MIN_WICK_SHARE = 0.6                 # ... and at least 60% of the bar's range
+# The first days of the history are dropped while the averages settle.
+FEATURE_WARMUP_DAYS = 14
+
+# --------------------------------------------------------------------------
 # Backups (backup.py) - run weekly by you
 # --------------------------------------------------------------------------
 # The IG recordings can't be downloaded again, so backup.py copies them and
