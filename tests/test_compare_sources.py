@@ -155,3 +155,20 @@ def test_cli_saves_report(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Saved to" in out
     assert len(list((tmp_path / "data" / "reports").glob("compare_sources_*.txt"))) == 1
+
+
+def test_ig_recorded_only_some_hours_does_not_distort_movement():
+    # Like the real first report: IG only recorded 13:00-19:59 UTC each day,
+    # Dukascopy has every hour. Same prices -> moves and ATR must agree.
+    dk_bars = make_bars(price_path([DAY1, DAY2]), 0.00002)
+    hours = pd.to_datetime(dk_bars["time_utc"], utc=True).dt.hour
+    ig_bars = dk_bars[(hours >= 13) & (hours < 20)].copy()          # same bars, fewer hours
+    price_cols = [c for c in ig_bars.columns if c.startswith(("bid_", "offer_"))]
+    ig_bars[price_cols] += 0.0002                                    # IG 2 pips higher
+    write_duka("EURUSD", dk_bars)
+    write_ig("EURUSD", ig_bars)
+    res = compare()
+    assert res["corr_5m"] > 0.99
+    assert res["atr_ratio"]["p05"] == pytest.approx(1.0, abs=0.01)
+    assert res["atr_ratio"]["p95"] == pytest.approx(1.0, abs=0.01)
+    assert res["range_ratio"]["median"] == pytest.approx(1.0, abs=0.01)

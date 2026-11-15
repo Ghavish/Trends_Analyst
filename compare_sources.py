@@ -21,7 +21,10 @@ IG bars marked partial are left out):
      spread across minutes, and by hour of day and by day (does it drift?).
   3. Movement - 5-minute bars built from the 1-minute bars of each source:
      how closely their moves agree, and IG's bar range and ATR divided by
-     Dukascopy's (TP and SL are set from ATR, so this matters most).
+     Dukascopy's (TP and SL are set from ATR, so this matters most). Both
+     sources' 5-minute bars use only the minutes both have, and moves are
+     measured only between bars exactly 5 minutes apart, so gaps (overnight,
+     engine off) can't distort them.
   4. Spreads - typical spread per hour of day in each source.
   5. Trading hours - 1-minute bars per hour of day in each source. Note: IG
      sends a price only when it changes, so a quiet minute can have no IG bar
@@ -112,8 +115,16 @@ def five_minute(m: pd.DataFrame) -> pd.DataFrame:
     return out.dropna()
 
 
+def follows_previous(b: pd.DataFrame, minutes: int = 5) -> pd.Series:
+    """True where the previous bar is exactly `minutes` earlier (no gap in between)."""
+    t = pd.Series(b.index, index=b.index)
+    return t.diff() == pd.Timedelta(minutes=minutes)
+
+
 def atr(b: pd.DataFrame, n: int = ATR_BARS) -> pd.Series:
-    prev = b["close"].shift(1)
+    """Average true range. After a gap (overnight, engine off) the previous close
+    isn't the bar just before, so that bar's true range is its own high - low."""
+    prev = b["close"].shift(1).where(follows_previous(b))
     tr = pd.concat([b["high"] - b["low"], (b["high"] - prev).abs(), (b["low"] - prev).abs()],
                    axis=1).max(axis=1)
     return tr.rolling(n).mean()
@@ -184,15 +195,20 @@ def compare_instrument(instrument: str, start: datetime, end: datetime) -> dict:
     res["level_rel"] = _q(diff / dk.loc[common, "close"])
     res["level_by_hour"] = diff.groupby(diff.index.hour).median()
     res["level_by_day"] = diff.groupby(diff.index.date).median()
-    # 3. movement on 5-minute bars
-    ig5, dk5 = five_minute(ig), five_minute(dk)
+    # 3. movement on 5-minute bars, built from the SAME minutes in both sources
+    #    (so a gap - overnight, engine off, partial bars - is identical in both),
+    #    and moves measured only between bars exactly 5 minutes apart.
+    ig5, dk5 = five_minute(ig.loc[common]), five_minute(dk.loc[common])
     c5 = ig5.index.intersection(dk5.index)
-    r = pd.concat([ig5["close"].diff(), dk5["close"].diff()], axis=1, sort=True).loc[c5].dropna()
-    res["corr_5m"] = float(r.iloc[:, 0].corr(r.iloc[:, 1])) if len(r) >= 30 else None
-    rng_dk = (dk5["high"] - dk5["low"]).loc[c5]
-    rng_ig = (ig5["high"] - ig5["low"]).loc[c5]
+    ig5, dk5 = ig5.loc[c5], dk5.loc[c5]
+    step = follows_previous(ig5)
+    r_ig, r_dk = ig5["close"].diff()[step], dk5["close"].diff()[step]
+    res["corr_5m"] = float(r_ig.corr(r_dk)) if len(r_ig) >= 30 else None
+    res["moves_5m"] = int(step.sum())
+    rng_dk = dk5["high"] - dk5["low"]
+    rng_ig = ig5["high"] - ig5["low"]
     res["range_ratio"] = _q((rng_ig / rng_dk.replace(0, np.nan)))
-    res["atr_ratio"] = _q((atr(ig5) / atr(dk5).replace(0, np.nan)).loc[c5])
+    res["atr_ratio"] = _q(atr(ig5) / atr(dk5).replace(0, np.nan))
     res["bars_5m"] = len(c5)
     # 4. spreads
     res["spread_ig"] = ig["spread"].groupby(ig.index.hour).median()
@@ -249,8 +265,9 @@ def format_report(res: dict, pip: float | None) -> list[str]:
     if len(by_day) > 1:
         lines.append("     by day: " + ", ".join(f"{d:%m-%d} {_fmt(v, unit)}" for d, v in by_day.items()))
     corr = res["corr_5m"]
-    lines.append(f"  3. Movement on {res['bars_5m']:,} common 5-min bars: correlation of moves "
-                 f"{corr:.3f}" if corr is not None else f"  3. Movement: too few common 5-min bars ({res['bars_5m']})")
+    lines.append(f"  3. Movement on {res['bars_5m']:,} common 5-min bars ({res['moves_5m']:,} moves between "
+                 f"back-to-back bars): correlation of moves {corr:.3f}" if corr is not None
+                 else f"  3. Movement: too few back-to-back 5-min bars ({res['moves_5m']})")
     rr, ar = res["range_ratio"], res["atr_ratio"]
     if rr.get("n"):
         lines.append(f"     IG / Dukascopy bar range: median {rr['median']:.3f} (90%: {rr['p05']:.3f}-{rr['p95']:.3f})")
