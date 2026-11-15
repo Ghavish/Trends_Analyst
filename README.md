@@ -7,6 +7,13 @@ confidence and position size, shown on a laptop dashboard.
 The project plan (*AI Trend Analyst: Project Plan*) is the single source of
 truth. Personal use only; nothing here is financial advice.
 
+## Pending ideas
+
+Three candidate ideas (opening-range features, risk checks in one place, a
+reality check on trade cards) wait for their triggers; see
+[ROADMAP.md](ROADMAP.md). Nothing there is built until its trigger is
+reached and confirmed.
+
 ## Files
 
 | File | Role |
