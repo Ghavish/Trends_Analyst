@@ -357,6 +357,56 @@ PIN_MIN_WICK_SHARE = 0.6                 # ... and at least 60% of the bar's ran
 FEATURE_WARMUP_DAYS = 14
 
 # --------------------------------------------------------------------------
+# Cost report (backtest.py costs) - decided 16 Nov 2026; no model involved
+# --------------------------------------------------------------------------
+# Overnight funding per night held past the 17:00 New York rollover.
+#  * EUR/USD: from the IG platform (EUR/USD Mini, Info > Overnight swap
+#    rates, read 16 Nov 2026): swap bid -0.47, swap offer -1.36 points per
+#    contract per night (1 point = 1 pip = $1 per Mini). Assumed: buys pay
+#    1.36 pips a night, sells pay 0.47; Wednesday counts three nights (T+2).
+#    To be confirmed by holding minimum-size demo positions overnight.
+#  * Indices: PROVISIONAL worst case from IG's documents: admin fee 4% a year
+#    (the highest listed) plus today's US policy rate (Fed target range
+#    3.75-4.00% after 28 Oct 2026; upper end used) for buys, the 4% fee with
+#    no interest credit for sells; divided by 360 days. Replace with the real
+#    charges measured on demo.
+US_POLICY_RATE = 0.0400
+INDEX_ADMIN_FEE = 0.04
+FUNDING = {
+    "EURUSD": {"kind": "pips_per_night", "buy": 1.36, "sell": 0.47, "wednesday_triple": True,
+               "provisional": False},
+    "US500": {"kind": "annual_rate", "buy": INDEX_ADMIN_FEE + US_POLICY_RATE, "sell": INDEX_ADMIN_FEE,
+              "day_count": 360, "wednesday_triple": False, "provisional": True},
+    "GER40": {"kind": "annual_rate", "buy": INDEX_ADMIN_FEE + US_POLICY_RATE, "sell": INDEX_ADMIN_FEE,
+              "day_count": 360, "wednesday_triple": False, "provisional": True},
+}
+# Your window in UTC (17:00-22:00 MUT = 13:00-18:00 UTC all year). Spreads and
+# slippage inside it are the ones you see; outside it, nobody is there.
+COST_WINDOW_UTC_HOURS = (13, 18)
+# Stop slippage. EUR/USD: 0.25 pips inside your window, 1 pip outside.
+# Indices: the same share of the 1-hour ATR as EUR/USD's 0.25 pips (0.25 /
+# 13.6-pip median 1-hour ATR stop in the labels report = 1.84%), 4x outside
+# your window (as 1 pip vs 0.25), 2x in the 15 minutes after the US cash open.
+COST_SLIPPAGE = {
+    "EURUSD": {"inside_pips": 0.25, "outside_pips": 1.0},
+    "US500": {"inside_atr_share": 0.25 / 13.6, "outside_multiple": 4.0, "us_open_multiple": 2.0,
+              "us_open_minutes": 15},
+    "GER40": {"inside_atr_share": 0.25 / 13.6, "outside_multiple": 4.0, "us_open_multiple": 2.0,
+              "us_open_minutes": 15},
+}
+# Longest data gap allowed inside a multi-day trade (indices pause every night).
+COST_MAX_GAP_MINUTES = {"EURUSD": 15, "US500": 180, "GER40": 180}
+# Holding rules compared: (name, ATR timeframe for TP / SL, days). days = 0 is
+# today's day trade (closed by the earlier of 4 h and 22:00 MUT); 1, 2, 5 =
+# closed at 22:00 MUT on that many weekdays after entry, never after Friday
+# 22:00 MUT of the entry week.
+COST_SCENARIOS = (("today: 1h ATR, same day", 60, 0),
+                  ("4h ATR, 1 day", 240, 1), ("4h ATR, 2 days", 240, 2), ("4h ATR, 5 days", 240, 5),
+                  ("daily ATR, 1 day", "D", 1), ("daily ATR, 2 days", "D", 2), ("daily ATR, 5 days", "D", 5))
+COST_NIGHT_SPREAD_MULTIPLE = 2.0      # the second set of results: spreads outside your window doubled
+COST_MIN_RECORDED_MINUTES = 30        # an hour's recorded IG spread is used only with this many minutes
+
+# --------------------------------------------------------------------------
 # Walk-forward training (train.py) - decided 15 Nov 2026, fixed, not tuned
 # --------------------------------------------------------------------------
 # Expanding training window from the start of the history; then a 6-month

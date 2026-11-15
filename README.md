@@ -32,7 +32,7 @@ reached and confirmed.
 | `features.py` | Bars, ATR, no-lookahead alignment, the ATR report, and the model's 46 features in three groups (base, candles, 1-hour trend) |
 | `labels.py` | Triple-barrier labels (buy and sell) for every entry in your window; label report |
 | `train.py` | Walk-forward training and testing: LightGBM per direction, Platt calibration, variants A-D, full report |
-| `backtest.py` | Backtest with costs and position sizing (Phase 2, step 3) |
+| `backtest.py` | Cost report (no model): every entry under several holding rules, with spreads, slippage and overnight funding; full backtest later |
 | `signals.py` | The engine (background process) |
 | `app.py` | The dashboard (Streamlit) |
 | `display.py` | Plain wording and price/spread formats used on screen (and later in alerts) |
@@ -255,6 +255,23 @@ a 95% interval for average R that resamples whole days, other thresholds
 (information only) and the most used features. Models are saved in
 `models\walkforward\`, predictions and trades in `data\walkforward\`, the
 report in `data\reports\`. Only the development period is used.
+
+## Cost report (no model)
+
+```powershell
+python backtest.py costs --instrument EURUSD --save   # about 3 minutes
+```
+
+Every entry 17:00-20:00 MUT taken as a buy and as a sell, under today's rule
+(1-hour ATR, same day) and with stops from the 4-hour or daily ATR held for
+1, 2 or 5 weekdays (closed at 22:00 MUT, never after Friday). For each rule:
+stop size, outcomes, costs in R (spread, stop slippage, overnight funding),
+the break-even TP share and the actual one, and the no-model average R with
+a 95% interval; then the same with night spreads doubled, and results by
+entry weekday. Spreads come from your IG recordings (night hours estimated
+until the engine has recorded them). Funding and slippage settings are in
+`config.py` ("Cost report"). US 500 and Germany 40 work the same way once
+downloaded (`--instrument US500` / `GER40`); their funding is provisional.
 
 ## Weekly backup (IG recordings and database)
 

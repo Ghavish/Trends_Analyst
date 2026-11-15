@@ -450,8 +450,9 @@ HISTORY_TICK_COLUMNS = ["time_utc", "bid", "offer", "bid_volume", "offer_volume"
 # Why history is being read (load_history_1m):
 PURPOSE_DEVELOPMENT = "development"            # features, labels, training, walk-forward, backtests
 PURPOSE_SOURCE_COMPARISON = "source_comparison"  # Dukascopy vs IG checks (any instrument)
+PURPOSE_COST_ANALYSIS = "cost_analysis"          # cost reports, no model (any instrument; development period only)
 PURPOSE_FINAL_EVALUATION = "final_evaluation"  # the one final check (Section 7.9)
-PURPOSES = (PURPOSE_DEVELOPMENT, PURPOSE_SOURCE_COMPARISON, PURPOSE_FINAL_EVALUATION)
+PURPOSES = (PURPOSE_DEVELOPMENT, PURPOSE_SOURCE_COMPARISON, PURPOSE_COST_ANALYSIS, PURPOSE_FINAL_EVALUATION)
 
 # The library logs every hour at INFO level; keep only its warnings and errors.
 _LIB_LOG = logging.getLogger("dukascopy_python_lib")
@@ -916,8 +917,10 @@ def check_history_access(instrument: str, start: datetime, end: datetime, purpos
     locked_from = development_end_utc()               # final check + the gap before it
     locked_to = config.FINAL_CHECK_END_UTC
     approved = config.HISTORY_APPROVED_FOR_MODEL.get(instrument, False)
-    if purpose == PURPOSE_DEVELOPMENT:
-        if not approved:
+    if purpose in (PURPOSE_DEVELOPMENT, PURPOSE_COST_ANALYSIS):
+        # Cost analysis (no model) may use instruments not yet approved for the
+        # model, but the same dates as development: never the final check.
+        if purpose == PURPOSE_DEVELOPMENT and not approved:
             raise HistoryAccessError(
                 f"{instrument} history is not approved for the model yet "
                 "(config.HISTORY_APPROVED_FOR_MODEL; the indices wait for the IG comparison)")
