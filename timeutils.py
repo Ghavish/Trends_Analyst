@@ -15,6 +15,7 @@ no built-in IANA time-zone database.
 
 import logging
 from datetime import datetime, date, time, timedelta, timezone
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 import config
@@ -162,3 +163,29 @@ def configure_logging(level: int = logging.INFO, log_file=None) -> None:
     root.setLevel(level)
     logging.getLogger("apscheduler").setLevel(logging.WARNING)  # its per-run messages are noise
     logging.getLogger("trading_ig").setLevel(logging.WARNING)   # never log usernames
+
+
+# --------------------------------------------------------------------------
+# Days without entries (holidays) - from a calendar known in advance
+# --------------------------------------------------------------------------
+
+@lru_cache(maxsize=None)
+def _exchange_days(year: int) -> dict:
+    """{date: reason} for exchange holidays and NYSE early closes in one year."""
+    import holidays                                   # only needed by the model pipeline
+    out: dict = {}
+    for code in config.SKIP_EXCHANGE_HOLIDAYS:
+        for d, name in holidays.financial_holidays(code, years=year).items():
+            out.setdefault(d, f"{code} holiday ({name})")
+    if config.SKIP_NYSE_EARLY_CLOSES:
+        for d, name in holidays.financial_holidays("NYSE", years=year, categories=("half_day",)).items():
+            out.setdefault(d, f"NYSE early close ({name})")
+    return out
+
+
+def no_entry_reason(day: date) -> str | None:
+    """Why no trade may be opened on this (Mauritius-time) date, or None."""
+    (m1, d1), (m2, d2) = config.SKIP_YEAR_END
+    if (day.month, day.day) >= (m1, d1) or (day.month, day.day) <= (m2, d2):
+        return "year-end holidays (24 Dec - 1 Jan)"
+    return _exchange_days(day.year).get(day)

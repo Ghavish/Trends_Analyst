@@ -24,7 +24,8 @@ reached and confirmed.
 | `db.py` | The only file that talks to SQLite |
 | `fetch_data.py` | Records the live IG feed; downloads Dukascopy history; the final-check lock |
 | `features.py` | Bars (5-, 15-, 60-minute), ATR, no-lookahead alignment; the ATR report; features (step 2b) |
-| `labels.py`, `train.py`, `backtest.py` | Model pipeline (Phase 2, next steps) |
+| `labels.py` | Triple-barrier labels (buy and sell) for every entry in your window; label report |
+| `train.py`, `backtest.py` | Model pipeline (Phase 2, next steps) |
 | `signals.py` | The engine (background process) |
 | `app.py` | The dashboard (Streamlit) |
 | `display.py` | Plain wording and price/spread formats used on screen (and later in alerts) |
@@ -196,6 +197,22 @@ cost, how often 1x ATR is below the 10x-spread floor, how far price travels
 in the next 4 hours, ATR by year, and unusually quiet weekdays (holidays).
 Longer bars are only used once complete (no lookahead); ATR doesn't reach
 across gaps such as weekends.
+
+## Labels (triple barrier)
+
+```powershell
+python labels.py build --save     # EUR/USD, 2019 to the end of the development period
+python labels.py report           # the report again, from the saved labels
+```
+
+For every 5-minute bar completing 17:00-20:00 MUT (entry at the next open),
+a buy and a sell are followed minute by minute: SL = 1 x 1-hour ATR(14)
+(at least 9 pips), TP = 1.5 x SL, closed by the earlier of 4 hours and
+22:00 MUT. Dukascopy mid + IG's 0.9-pip spread, 0.25-pip stop slippage;
+TP and SL in the same minute counts as SL. No entries on 24 Dec - 1 Jan,
+NYSE / London holidays or NYSE early-close days, in the first hour after a
+gap, or across a data gap. Saved to `data\datasets\EURUSD_labels_v1.parquet`
+with its settings in a `.json` file next to it. All settings are in `config.py`.
 
 ## Weekly backup (IG recordings and database)
 

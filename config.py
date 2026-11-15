@@ -308,6 +308,34 @@ IG_SPREAD_PIPS = {"EURUSD": 0.9}
 SL_SLIPPAGE_PIPS = {"EURUSD": 0.25}
 
 # --------------------------------------------------------------------------
+# Triple-barrier labels (labels.py) - decided 15 Nov 2026, fixed, not tuned
+# --------------------------------------------------------------------------
+# TP and SL come from the ATR of completed 1-hour bars (the 5-minute ATR was
+# too small next to IG's spread; see the ATR report of 15 Nov 2026).
+BARRIER_ATR_MINUTES = 60
+SL_ATR_MULTIPLE = 1.0
+TP_ATR_MULTIPLE = 1.5
+# The stop is never closer than this many IG spreads (9 pips on EUR/USD).
+# When this floor applies, TP = TP_ATR_MULTIPLE / SL_ATR_MULTIPLE x the floor (1.5:1 kept).
+STOP_FLOOR_SPREADS = 10
+MAX_HOLD_HOURS = 4
+# Your trading window, Mauritius time (no daylight saving, so the same UTC
+# times all year: entries 13:00-16:00 UTC, everything closed by 18:00 UTC).
+ENTRY_FIRST_MUT = (17, 0)     # first entry 17:00 MUT
+ENTRY_LAST_MUT = (20, 0)      # last entry 20:00 MUT (no entries in the last 2 hours)
+CLOSE_BY_MUT = (22, 0)        # every trade closed by 22:00 MUT
+# Safety: never hold past this New York time (the 17:00 rollover starts
+# overnight funding). With the window above it never binds.
+ROLLOVER_CUTOFF_NY = (16, 45)
+# Days without entries (known in advance, from the "holidays" library):
+# 24 Dec - 1 Jan, New York Stock Exchange and London Stock Exchange
+# holidays, and NYSE early-close days (e.g. the Friday after Thanksgiving).
+SKIP_YEAR_END = ((12, 24), (1, 1))
+SKIP_EXCHANGE_HOLIDAYS = ("NYSE", "XLON")
+SKIP_NYSE_EARLY_CLOSES = True
+DATASETS_DIR = DATA_DIR / "datasets"   # labels and features (Parquet + settings .json)
+
+# --------------------------------------------------------------------------
 # Backups (backup.py) - run weekly by you
 # --------------------------------------------------------------------------
 # The IG recordings can't be downloaded again, so backup.py copies them and

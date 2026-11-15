@@ -19,7 +19,7 @@ stop, tell you, confirm, then build.
 | 1 · Risk checks (`risk.py`) | End of Phase 2: the engine's filter step (plan Section 8, step 4) is about to be built, before the first live signal | No |
 | 3 · Reality check on trade cards | Start of Phase 3: trade cards are live on demo in signals-only mode | No |
 
-Last checked: 15 November 2026, at Phase 2 step 2a (ATR report).
+Last checked: 15 November 2026, at Phase 2 step 2a (labels). No trigger reached.
 
 ---
 
@@ -45,8 +45,9 @@ To raise when the trigger comes:
   open (18:30 / 17:30 MUT) is inside your usual engine hours (17:00-22:00 MUT);
   the Frankfurt open (12:00 / 11:00 MUT) is not, so Germany 40 needs
   recordings at that time first.
-- Holiday calendar: a new library needs your approval; it could share the
-  holiday calendar decided for step 2 (question 10).
+- Holiday calendar: the `holidays` library (NYSE and London calendars,
+  NYSE early closes) was adopted in step 2a; it also has other exchanges'
+  calendars, to be checked for the Frankfurt (Xetra) holidays.
 
 ## Idea 1 · Risk checks in one place (document Section 4)
 
@@ -72,8 +73,9 @@ reward-to-risk after spread = ?, entry window = ? minutes before the
 close-by time.
 
 To raise when the trigger comes:
-- The entry window overlaps the step-2 rule "no new trade in the last hour
-  before the daily cut-off"; one setting should serve both.
+- The entry window overlaps the step-2a rule: entries 17:00-20:00 MUT, every
+  trade closed by 22:00 MUT (config.ENTRY_LAST_MUT / CLOSE_BY_MUT); one
+  setting should serve both.
 - With a 10x-spread stop floor and TP 1.5 / SL 1, reward-to-risk after spread
   is at least about 1.27, so a 1.2-1.3 minimum would rarely bind.
 - Still open from Phase 1: the per-instrument maximum lots; the news check
