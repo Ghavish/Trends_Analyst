@@ -349,18 +349,51 @@ SWING_BARS_5M = 6                        # a swing high/low beats 6 bars each si
 SWING_BARS_1H = 2                        # the same on 1-hour bars (1-hour trend group)
 TREND_1H_HOURS = (1, 4, 12, 24)          # 1-hour trend group: price change over these many hours
 RANGE_1H_HOURS = 24                      # position within the last 24 hours' range
-# Sessions (local time, so daylight saving is handled): used for the session
-# flags and "minutes since the open". Forex convention, 08:00-17:00 local.
-SESSIONS = {
-    "london": (TZ_LONDON, (8, 0), (17, 0)),
-    "new_york": (TZ_NEW_YORK, (8, 0), (17, 0)),
-}
 # Candlestick flag definitions (5-minute mid bars; "body" = close - open):
 DOJI_MAX_BODY_SHARE = 0.1                # doji: body at most 10% of the bar's range
 PIN_MIN_WICK_TO_BODY = 2.0               # pin bar: the long wick at least 2x the body ...
 PIN_MIN_WICK_SHARE = 0.6                 # ... and at least 60% of the bar's range
 # The first days of the history are dropped while the averages settle.
 FEATURE_WARMUP_DAYS = 14
+
+# --------------------------------------------------------------------------
+# Walk-forward training (train.py) - decided 15 Nov 2026, fixed, not tuned
+# --------------------------------------------------------------------------
+# Expanding training window from the start of the history; then a 6-month
+# calibration period and a 6-month test period; roll forward 6 months.
+# One trading day is left out between training and calibration and between
+# calibration and test (every trade closes the same day, so nothing leaks).
+WF_FIRST_TEST_START = datetime(2022, 7, 1, tzinfo=timezone.utc)
+WF_PERIOD_MONTHS = 6
+WF_GAP_TRADING_DAYS = 1
+# One LightGBM model per direction (buy, sell). Conservative settings, no
+# early stopping, reproducible (same data -> same model).
+LGBM_THREADS = 4
+LGBM_TREES = 400
+LGBM_PARAMS = {
+    "objective": "binary", "num_leaves": 15, "min_data_in_leaf": 200, "learning_rate": 0.03,
+    "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 1, "seed": 20261115,
+    "deterministic": True, "force_row_wise": True, "num_threads": LGBM_THREADS, "verbose": -1,
+}
+# Probability calibration: Platt (sigmoid) is used; isotonic is shown for information.
+# Expected value per trade = p x (average R of winners) + (1 - p) x (average R
+# of non-winners), both averages from the calibration period.
+SIGNAL_MIN_EV_R = 0.10                        # a signal only if EV >= +0.10 R
+SIGNAL_EV_INFO_THRESHOLDS = (0.0, 0.05, 0.10, 0.20)   # shown for information only
+# Model variants compared in identical rounds (feature groups from features.py).
+VARIANTS = {
+    "A": ("base",),
+    "B": ("base", "candles"),
+    "C": ("base", "trend_1h"),
+    "D": ("base", "candles", "trend_1h"),
+}
+# A feature group is kept only if adding it lowers the test-period log loss
+# in at least this many of the walk-forward periods (6 of 8).
+GROUP_KEEP_MIN_PERIODS = 6
+# Bootstrap confidence interval on average R: resample whole trading days.
+BOOTSTRAP_RESAMPLES = 2000
+BOOTSTRAP_SEED = 20261115
+CALIBRATION_BAND = 0.05                       # reliability table in 5-point bands
 
 # --------------------------------------------------------------------------
 # Backups (backup.py) - run weekly by you

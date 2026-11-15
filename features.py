@@ -15,7 +15,7 @@ Building blocks (step 2a):
   * close_by_times()  when a trade must be closed (shared with labels.py)
 
 The features (step 2b), compute_features(), in three groups:
-  * base      time and sessions (London / New York local clocks), minutes
+  * base      time (London / New York local clocks, weekday), minutes
               until the close-by time, volatility (5-min / 1-hour ATR, each vs
               its usual level at that time of day over the previous 20 days
               with data), momentum, distance from 20/50-bar EMAs, day structure
@@ -163,7 +163,7 @@ def in_entry_window(ready: pd.DatetimeIndex) -> np.ndarray:
 # (tests/test_features.py) checks this: features computed on data cut off at
 # a random time equal the full-data values at that time.
 # --------------------------------------------------------------------------
-FEATURES_VERSION = 1
+FEATURES_VERSION = 2               # 2: five redundant time features dropped (15 Nov 2026)
 
 
 def _usual(values: pd.Series, n_days: int) -> pd.Series:
@@ -236,15 +236,9 @@ def compute_features(b1: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, list[str
     add("base", "london_minute_of_day", lon.hour * 60 + lon.minute)
     add("base", "ny_minute_of_day", nyc.hour * 60 + nyc.minute)
     add("base", "weekday", ready.tz_convert(config.TZ_MAURITIUS).day_of_week)
-    open_flags = {}
-    for name, (tz, start, end) in config.SESSIONS.items():
-        loc = ready.tz_convert(tz)
-        mins = loc.hour * 60 + loc.minute
-        s0, s1 = start[0] * 60 + start[1], end[0] * 60 + end[1]
-        add("base", f"min_since_{name}_open", mins - s0)
-        open_flags[name] = (mins >= s0) & (mins < s1)
-        add("base", f"{name}_open", open_flags[name])
-    add("base", "overlap_open", open_flags["london"] & open_flags["new_york"])
+    # (Session flags and "minutes since the open" were dropped in version 2:
+    # inside your window both sessions are always open, and minutes since the
+    # open only repeat the local clock.)
     add("base", "minutes_to_close_by", (ns(close_by_times(ready)) - ns(ready)) / 60e9)
 
     # ---- volatility ----
@@ -325,7 +319,7 @@ def feature_file(instrument: str) -> Path:
 def feature_settings() -> dict:
     names = ("DECISION_BAR_MINUTES", "ATR_BARS", "GAP_MINUTES", "USUAL_ATR_DAYS", "MOMENTUM_BARS",
              "EMA_SPANS", "SWING_BARS_5M", "SWING_BARS_1H", "TREND_1H_HOURS", "RANGE_1H_HOURS",
-             "SESSIONS", "DOJI_MAX_BODY_SHARE", "PIN_MIN_WICK_TO_BODY", "PIN_MIN_WICK_SHARE",
+             "DOJI_MAX_BODY_SHARE", "PIN_MIN_WICK_TO_BODY", "PIN_MIN_WICK_SHARE",
              "FEATURE_WARMUP_DAYS", "ENTRY_FIRST_MUT", "ENTRY_LAST_MUT", "CLOSE_BY_MUT",
              "MAX_HOLD_HOURS", "ROLLOVER_CUTOFF_NY", "TRADING_DAY_RESET_HOUR")
     return {"features_version": FEATURES_VERSION, **{k.lower(): getattr(config, k) for k in names}}

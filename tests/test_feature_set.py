@@ -110,6 +110,10 @@ def test_truncation_covers_every_feature_with_values():
 # --------------------------------------------------------------------------
 def test_groups():
     assert set(GROUPS) == {"base", "candles", "trend_1h"}
+    assert [len(GROUPS[g]) for g in ("base", "candles", "trend_1h")] == [19, 17, 10]
+    for dropped in ("min_since_london_open", "min_since_new_york_open", "london_open",
+                    "new_york_open", "overlap_open"):
+        assert dropped not in FULL.columns
     assert sum(len(v) for v in GROUPS.values()) == FULL.shape[1]
     assert "minutes_to_close_by" in GROUPS["base"] and "engulfing_bull" in GROUPS["candles"]
     assert "h_ret_24" in GROUPS["trend_1h"]
@@ -126,7 +130,6 @@ def test_time_features_use_local_clocks(bar, london, ny, left):
     f, _ = ft.compute_features(ft.to_indexed(ohlc_bars(t, 1.1, 1.1001, 1.0999, 1.1)))
     row = f.loc[pd.Timestamp(bar, tz="UTC")]
     assert (row["london_minute_of_day"], row["ny_minute_of_day"], row["minutes_to_close_by"]) == (london, ny, left)
-    assert row["london_open"] == 1 and row["new_york_open"] == 1 and row["overlap_open"] == 1
 
 
 def test_usual_uses_only_previous_days_with_data_and_skips_holidays():

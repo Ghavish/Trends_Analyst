@@ -34,4 +34,9 @@ plotly==7.1.0               # dashboard charts
 # --- Tests ---
 pytest==9.2.0
 
-# Phase 2, later steps (not needed yet): lightgbm, scikit-learn
+# --- Model (train.py) ---
+lightgbm==4.7.0             # gradient-boosted trees (ready-made Windows wheel for Python 3.14)
+scikit-learn==1.9.1         # probability calibration (Platt / isotonic)
+scipy==1.18.1               # needed by scikit-learn
+joblib==1.6.0               # needed by scikit-learn
+threadpoolctl==3.8.0        # needed by scikit-learn

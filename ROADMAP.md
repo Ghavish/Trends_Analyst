@@ -19,7 +19,7 @@ stop, tell you, confirm, then build.
 | 1 · Risk checks (`risk.py`) | End of Phase 2: the engine's filter step (plan Section 8, step 4) is about to be built, before the first live signal | No |
 | 3 · Reality check on trade cards | Start of Phase 3: trade cards are live on demo in signals-only mode | No |
 
-Last checked: 15 November 2026, at Phase 2 step 2b (features). No trigger reached.
+Last checked: 15 November 2026, at Phase 2 step 2c (walk-forward training built, not yet run on real data). No trigger reached: the indices are not cleared and there is no real walk-forward result yet.
 
 ---
 

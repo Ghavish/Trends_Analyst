@@ -23,9 +23,10 @@ reached and confirmed.
 | `broker.py` | The only file that talks to IG (login, streaming, reconnection; orders later) |
 | `db.py` | The only file that talks to SQLite |
 | `fetch_data.py` | Records the live IG feed; downloads Dukascopy history; the final-check lock |
-| `features.py` | Bars, ATR, no-lookahead alignment, the ATR report, and the model's 51 features in three groups (base, candles, 1-hour trend) |
+| `features.py` | Bars, ATR, no-lookahead alignment, the ATR report, and the model's 46 features in three groups (base, candles, 1-hour trend) |
 | `labels.py` | Triple-barrier labels (buy and sell) for every entry in your window; label report |
-| `train.py`, `backtest.py` | Model pipeline (Phase 2, next steps) |
+| `train.py` | Walk-forward training and testing: LightGBM per direction, Platt calibration, variants A-D, full report |
+| `backtest.py` | Backtest with costs and position sizing (Phase 2, step 3) |
 | `signals.py` | The engine (background process) |
 | `app.py` | The dashboard (Streamlit) |
 | `display.py` | Plain wording and price/spread formats used on screen (and later in alerts) |
@@ -217,7 +218,7 @@ with its settings in a `.json` file next to it. All settings are in `config.py`.
 ## Features
 
 ```powershell
-python features.py build --save   # EUR/USD, 2019 to the end of the development period
+python features.py build --save   # EUR/USD, 2019 to the end of the development period (version 2: 46 features)
 python features.py describe       # summary again, from the saved file
 ```
 
@@ -227,6 +228,26 @@ feature groups in the `.json` next to it). Labels are a separate file; the
 two join on `signal_bar_utc`. Every feature uses only bars complete at the
 decision time: a test recomputes them on data cut off at random times and
 checks they are identical to the full-data values.
+
+## Walk-forward training and testing
+
+```powershell
+python labels.py build              # once (or after label settings change)
+python features.py build            # once (or after feature settings change)
+python train.py walkforward         # about 1-3 minutes
+```
+
+Eight rounds: train on everything before, calibrate on the next 6 months
+(Platt; isotonic for information), test on the 6 months after that; 1
+trading day left out between periods. One LightGBM model per direction;
+variants A = base, B = + candles, C = + 1-hour trend, D = both, all in the
+same rounds. A signal needs EV >= +0.10 R; trades one at a time. The report
+shows test log loss per period (a group is kept only if it helps in 6 of 8),
+calibration by 5-point bands, trades per period against a no-model baseline,
+a 95% interval for average R that resamples whole days, other thresholds
+(information only) and the most used features. Models are saved in
+`models\walkforward\`, predictions and trades in `data\walkforward\`, the
+report in `data\reports\`. Only the development period is used.
 
 ## Weekly backup (IG recordings and database)
 
