@@ -397,9 +397,10 @@ def test_pilot_report_and_status(fake_lib, monkeypatch):
     assert "7 days" in text
     # The fake returns ticks in every hour, including the weekend: the report must say so.
     assert "the skip rule would lose these" in text
-    assert "estimate 2019-01-01 to 2026-11-06" in text
+    assert "estimate 2015-01-01 to 2026-11-06" in text
     status = "\n".join(fetch_data.history_status())
     assert "EURUSD" in status and "read 0 time(s)" in status
+    assert "first day with ticks 2026-03-02" in status
     assert "approved for the model: your window only, not overnight" in status      # the indices
     monkeypatch.setitem(config.HISTORY_APPROVED_FOR_MODEL, "GER40", False)
     assert "NOT approved" in "\n".join(fetch_data.history_status())

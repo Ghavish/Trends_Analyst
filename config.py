@@ -226,8 +226,10 @@ DUKASCOPY_SYMBOLS = {
     "GER40": "DEU.IDX-EUR",        # "Germany 40 Index" (quoted in EUR at Dukascopy)
 }
 
-# First day downloaded (you chose 2019; the pilot shows whether 2015 is worth adding).
-HISTORY_START_UTC = datetime(2019, 1, 1, tzinfo=timezone.utc)
+# First day of history. 2019 at first; extended to 2015 on 22 Nov 2026 for the
+# daily-decision experiment (decided before any results; the only exception
+# would be Dukascopy lacking the data - see "first day with ticks" in status).
+HISTORY_START_UTC = datetime(2015, 1, 1, tzinfo=timezone.utc)
 
 # Dukascopy may publish recent hours late, and an hour that isn't published
 # yet looks the same as an hour with no trading. So days newer than this are

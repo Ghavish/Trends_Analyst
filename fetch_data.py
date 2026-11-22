@@ -1083,11 +1083,14 @@ def history_status() -> list[str]:
             approved = "approved for the model"
         else:
             approved = "approved for the model: your window only, not overnight"
+        with_ticks = [r["day"] for r in rows if r["tick_count"] > 0]
+        first = f"first day with ticks {min(with_ticks)}" if with_ticks else "no ticks yet"
         tick_mb = "?" if problem else f"{_dir_bytes(config.DUKASCOPY_TICKS_DIR / inst) / 1e6:,.0f}"
         lines.append(f"{inst:<7} {len(in_range):>5}/{len(all_days)} days since "
                      f"{config.HISTORY_START_UTC:%Y-%m-%d}, {ticks:,} ticks, "
                      f"ticks {tick_mb} MB, "
                      f"bars {_dir_bytes(config.DUKASCOPY_BARS_1M_DIR / inst) / 1e6:,.1f} MB  ({approved})")
+        lines.append(f"        {first}")
         if not problem:
             missing = missing_tick_files(inst)
             if missing:

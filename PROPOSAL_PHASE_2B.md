@@ -1,8 +1,9 @@
 # Proposal: Phase 2B - one decision per instrument per day, held about a day
 
-Status: **proposal for your decision** (22 November 2026). Nothing here is
-built. Adopting it changes decisions in plan Section 2, so the plan would be
-updated first, and every change logged in `METHOD_CHANGES.md`.
+Status: **adopted as an experiment on 22 November 2026** (your decisions in
+section 8, fixed before any results). Adopting it changes decisions in plan
+Section 2 (trading style, decisions per bar), so the plan PDF should be
+updated; every change is logged in `METHOD_CHANGES.md`.
 
 Not financial advice; personal use only.
 
@@ -154,3 +155,48 @@ The intraday time features drop out (the decision time is fixed).
 Prerequisites already under way: the overnight recording week (needed for
 the indices' overnight clearance and real night spreads), the demo funding
 figures, the futures spreads, and the 5 December confirmation comparison.
+
+---
+
+## 8. Decisions of 22 November 2026 (fixed before any results)
+
+**Stopping rule.** This is an experiment. If it fails the fixed criteria
+below, this line of work stops; no variants are tried afterwards.
+
+1. **Holding about a day**, as an experiment.
+2. **One decision per instrument per weekday at 17:15 MUT** (13:15 UTC all
+   year). It is before the 08:30 New York US data releases only in winter
+   (17:30 MUT); in summer those releases come 45 minutes before it
+   (16:30 MUT).
+3. **No new positions on Fridays.** Thursday's positions close at Friday's
+   decision time.
+4. **Label A**: a buy (and, separately, a sell) entered at the decision time
+   and closed at the next decision time, with a **protective stop at 1 x
+   daily ATR(14)** and a **take profit at 3 x daily ATR(14)** (Phase 1 rule:
+   every order carries both); label = 1 if its result in R after spread,
+   slippage and funding is above 0. The labels use the same 3 x level. The
+   report keeps the **predicted EV vs realised R table by EV band**.
+5. **EUR/USD first**, with two rules:
+   - (a) The EUR/USD-only test **can stop the project but cannot pass it**;
+     the pass verdict comes only from the full pooled test. "Stop" means:
+     the model does not beat the same-direction baseline on test log loss in
+     most periods, **or** its average-R interval lies entirely below that
+     baseline.
+   - (b) **History extended to 2015 for all five instruments**, decided now,
+     not after results; the only exception is Dukascopy lacking the data.
+6. **Feature groups:** base_daily and cross_market first; rates approved but
+   tested last (FRED has no daily German 2-year yield; the Bundesbank
+   publishes one daily, series BBSSY.D.REN.EUR.A610.000000WT0202.A, to be
+   checked then); daily candles skipped.
+7. **Pass criteria** (full pooled test), section 6 plus:
+   - (a) beat a baseline that always trades each instrument in the
+     direction that was most profitable in its training data, with the same
+     day-resampled 95% interval (the indices rose over 2015-2026);
+   - (b) choose the feature set by the log-loss rule first, then apply the
+     profit test **once**, to that one model;
+   - (c) period rules stated as shares (with 2015 history there are about 16
+     test periods);
+   - (d) "no single instrument carries it" = the pooled average R stays
+     above 0 with any one instrument removed;
+   - (e) when the portfolio limits allow fewer positions than signals, the
+     highest-EV signals are taken (fixed in advance).
