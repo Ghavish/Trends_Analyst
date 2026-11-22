@@ -94,8 +94,10 @@ def test_every_instrument_code_exists_in_library(inst, decimals):
 def test_symbols_cover_all_instruments():
     assert set(config.DUKASCOPY_SYMBOLS) == set(config.INSTRUMENTS)
     assert set(config.HISTORY_APPROVED_FOR_MODEL) == set(config.INSTRUMENTS)
-    assert not config.HISTORY_APPROVED_FOR_MODEL["US500"]
-    assert not config.HISTORY_APPROVED_FOR_MODEL["GER40"]
+    # Cleared 22 Nov 2026 for your window only; overnight needs its own comparison.
+    assert config.HISTORY_APPROVED_FOR_MODEL["US500"] and config.HISTORY_APPROVED_FOR_MODEL["GER40"]
+    assert not config.HISTORY_APPROVED_OVERNIGHT["US500"] and not config.HISTORY_APPROVED_OVERNIGHT["GER40"]
+    assert set(config.HISTORY_APPROVED_OVERNIGHT) == set(config.INSTRUMENTS)
 
 
 # --------------------------------------------------------------------------
@@ -353,7 +355,9 @@ def _d(*a):
     ("US500", _d(2026, 5, 1), _d(2026, 11, 1), "final_evaluation", False),     # not approved
     ("EURUSD", _d(2020, 1, 1), _d(2020, 2, 1), "training", False),             # unknown purpose
 ])
-def test_history_access_rules(inst, start, end, purpose, ok):
+def test_history_access_rules(inst, start, end, purpose, ok, monkeypatch):
+    # The rules for an instrument not (yet) approved, using US 500 as the example.
+    monkeypatch.setitem(config.HISTORY_APPROVED_FOR_MODEL, "US500", False)
     if ok:
         fetch_data.check_history_access(inst, start, end, purpose)
     else:
@@ -395,7 +399,10 @@ def test_pilot_report_and_status(fake_lib, monkeypatch):
     assert "the skip rule would lose these" in text
     assert "estimate 2019-01-01 to 2026-11-06" in text
     status = "\n".join(fetch_data.history_status())
-    assert "EURUSD" in status and "NOT approved" in status and "read 0 time(s)" in status
+    assert "EURUSD" in status and "read 0 time(s)" in status
+    assert "approved for the model: your window only, not overnight" in status      # the indices
+    monkeypatch.setitem(config.HISTORY_APPROVED_FOR_MODEL, "GER40", False)
+    assert "NOT approved" in "\n".join(fetch_data.history_status())
 
 
 def test_cli_status_runs(capsys, monkeypatch):

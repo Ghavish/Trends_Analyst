@@ -1077,7 +1077,12 @@ def history_status() -> list[str]:
         rows = db.get_history_days(DUKASCOPY, inst)
         in_range = {r["day"] for r in rows if config.HISTORY_START_UTC.date() <= r["day"] < end.date()}
         ticks = sum(r["tick_count"] for r in rows)
-        approved = "approved for the model" if config.HISTORY_APPROVED_FOR_MODEL.get(inst) else "NOT approved for the model yet"
+        if not config.HISTORY_APPROVED_FOR_MODEL.get(inst):
+            approved = "NOT approved for the model yet"
+        elif config.HISTORY_APPROVED_OVERNIGHT.get(inst):
+            approved = "approved for the model"
+        else:
+            approved = "approved for the model: your window only, not overnight"
         tick_mb = "?" if problem else f"{_dir_bytes(config.DUKASCOPY_TICKS_DIR / inst) / 1e6:,.0f}"
         lines.append(f"{inst:<7} {len(in_range):>5}/{len(all_days)} days since "
                      f"{config.HISTORY_START_UTC:%Y-%m-%d}, {ticks:,} ticks, "

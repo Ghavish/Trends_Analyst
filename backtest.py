@@ -345,7 +345,23 @@ def summarize(trades: pd.DataFrame) -> dict:
             "hours": trades["hours_held"].mean(),
             "break_even": -avg_sl / (avg_tp - avg_sl) if avg_tp > avg_sl else np.nan,
             "tp_share": (o == "TP").sum() / decided if decided else np.nan,
-            "avg_r": trades["result_r"].mean(), "ci": (lo, hi)}
+            "avg_r": trades["result_r"].mean(), "ci": (lo, hi), **cost_vs_move(trades)}
+
+
+def cost_vs_move(trades: pd.DataFrame) -> dict:
+    """
+    Cost relative to the typical move: the total cost per trade (spread +
+    slippage + funding, in R) divided by the standard deviation of trade
+    results (how much a trade's result typically varies). The smaller it is,
+    the less predictive skill is needed to overcome the costs. 'trades to
+    see' = how many independent trades it takes before an edge as big as the
+    costs stands 2 standard errors clear of zero: (2 / ratio) squared.
+    """
+    cost = float((trades["spread_r"] + trades["slippage_r"] + trades["funding_r"]).mean())
+    sd = float(trades["result_r"].std())
+    ratio = cost / sd if sd > 0 else np.nan
+    return {"cost_r": cost, "sd_r": sd, "cost_sd": ratio,
+            "trades_to_see": (2 / ratio) ** 2 if ratio and ratio > 0 else np.nan}
 
 
 def run_costs(b1: pd.DataFrame, instrument: str, night_multiple: float = 1.0, scenarios=None):
@@ -372,15 +388,23 @@ def _row(label: str, s: dict) -> str:
             f"{s['avg_r']:>+7.3f} [{lo:+.3f}, {hi:+.3f}]")
 
 
-HEADER = (f"  {'rule / side':<32} {'trades':>6} {'stop':>7} {'TP/SL/TO %':>10} {'hours':>6} "
-          f"{'spread':>6} {'slip':>6} {'fund':>6} {'break-':>7} {'actual':>7} {'avg R':>7}  95% interval\n"
-          f"  {'':<32} {'':>6} {'(pips)':>7} {'':>10} {'held':>6} {'(R)':>6} {'(R)':>6} {'(R)':>6} "
-          f"{'even TP':>7} {'TP':>7} {'(no model)':>10}")
+def header(unit: str) -> str:
+    return (f"  {'rule / side':<32} {'trades':>6} {'stop':>7} {'TP/SL/TO %':>10} {'hours':>6} "
+            f"{'spread':>6} {'slip':>6} {'fund':>6} {'break-':>7} {'actual':>7} {'avg R':>7}  95% interval\n"
+            f"  {'':<32} {'':>6} {'(' + unit + ')':>7} {'':>10} {'held':>6} {'(R)':>6} {'(R)':>6} {'(R)':>6} "
+            f"{'even TP':>7} {'TP':>7} {'(no model)':>10}")
+
+
+def _move_row(label: str, s: dict) -> str:
+    if s.get("n", 0) == 0:
+        return f"  {label:<32} no trades"
+    return (f"  {label:<32} {s['cost_r']:>9.3f} {s['sd_r']:>9.3f} {s['cost_sd']:>9.3f} "
+            f"{s['trades_to_see']:>12,.0f}")
 
 
 def cost_report(instrument: str, b1: pd.DataFrame) -> list[str]:
     f = config.FUNDING[instrument]
-    unit = "pips" if instrument in config.PIP_SIZE else "points"
+    unit = "pips" if instrument in config.PIP_SIZE else "pts"
     lines = [f"Cost report: {instrument}, no model - every entry 17:00-20:00 MUT taken as a buy and as a sell.",
              "TP = 1.5 x SL; SL = 1 x ATR(14) of the timeframe shown, at least 10 x the spread at entry.",
              "'break-even TP' = share of finished trades (TP or SL) that must hit TP to break even, with costs;",
@@ -393,7 +417,8 @@ def cost_report(instrument: str, b1: pd.DataFrame) -> list[str]:
     for mult in (1.0, config.COST_NIGHT_SPREAD_MULTIPLE):
         table, results = run_costs(b1, instrument, mult)
         if mult == 1.0:
-            lines.append(f"Spread used by UTC hour ({unit}; your window is 13-17 UTC = 17-22 MUT):")
+            lines.append(f"Spread used by UTC hour ({'pips' if unit == 'pips' else 'points'}; "
+                         "your window is 13-17 UTC = 17-22 MUT):")
             for h, r in table.iterrows():
                 rec = f"{r['ig_recorded'] / pip(instrument):.2f}" if pd.notna(r["ig_recorded"]) else "-"
                 lines.append(f"  {h:02d} UTC ({(h + 4) % 24:02d} MUT): {r['used'] / pip(instrument):6.2f}  "
@@ -403,11 +428,21 @@ def cost_report(instrument: str, b1: pd.DataFrame) -> list[str]:
             lines.append("A. Spreads as above")
         else:
             lines.append(f"B. Spreads outside your window x{mult:g} (night spreads doubled)")
-        lines.append(HEADER)
+        lines.append(header(unit))
+        sums = {}
         for res in results:
             for side in SIDES:
                 t = res["trades"][res["trades"]["side"] == side] if len(res["trades"]) else res["trades"]
-                lines.append(_row(f"{res['name']} - {side}", summarize(t)))
+                sums[(res["name"], side)] = summarize(t)
+                lines.append(_row(f"{res['name']} - {side}", sums[(res["name"], side)]))
+        lines.append("")
+        lines.append(f"{'A' if mult == 1.0 else 'B'}2. Cost relative to the typical move (smaller = less skill needed)")
+        lines.append("   cost = spread + slippage + funding per trade; sd = standard deviation of trade results;")
+        lines.append("   'trades to see' = independent trades needed before an edge as large as the costs")
+        lines.append("   stands 2 standard errors clear of zero, (2 / (cost/sd)) squared.")
+        lines.append(f"  {'rule / side':<32} {'cost (R)':>9} {'sd (R)':>9} {'cost/sd':>9} {'trades to see':>12}")
+        for (name, side), sm in sums.items():
+            lines.append(_move_row(f"{name} - {side}", sm))
         lines.append("")
         if mult == 1.0:
             lines.append("By entry weekday (average R, no model; Friday entries close the same day at 22:00 MUT):")

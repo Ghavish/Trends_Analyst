@@ -268,10 +268,12 @@ Every entry 17:00-20:00 MUT taken as a buy and as a sell, under today's rule
 stop size, outcomes, costs in R (spread, stop slippage, overnight funding),
 the break-even TP share and the actual one, and the no-model average R with
 a 95% interval; then the same with night spreads doubled, and results by
-entry weekday. Spreads come from your IG recordings (night hours estimated
+entry weekday, and the cost relative to the typical move (cost per trade / spread of results, and how many trades it takes to see an edge that size). Spreads come from your IG recordings (night hours estimated
 until the engine has recorded them). Funding and slippage settings are in
 `config.py` ("Cost report"). US 500 and Germany 40 work the same way once
 downloaded (`--instrument US500` / `GER40`); their funding is provisional.
+The indices are cleared for the model for your 17:00-22:00 MUT window only;
+not overnight until the night hours have been compared.
 
 ## Weekly backup (IG recordings and database)
 

@@ -276,9 +276,23 @@ FINAL_CHECK_END_UTC = datetime(2026, 11, 1, tzinfo=timezone.utc)   # not include
 FINAL_CHECK_GAP_DAYS = 1
 
 # Instruments whose Dukascopy history may be used to build the model.
-# The indices stay out until the comparison with IG's own prices is done
-# (you decided this on 9 Nov 2026). They are still downloaded.
+# The indices were held back until the comparison with IG's own prices.
+# Cleared on 22 Nov 2026 for your 17:00-22:00 MUT window only (13:00-18:00
+# UTC): in those hours Dukascopy matched IG (timing 0 min, 5-minute moves
+# 0.997-0.998, ATR ratio ~1.00, 8 days). The comparison is repeated as a
+# confirmation at the planned date.
 HISTORY_APPROVED_FOR_MODEL = {
+    "EURUSD": True,
+    "GBPUSD": True,
+    "USDJPY": True,
+    "US500": True,
+    "GER40": True,
+}
+# Trades held outside your window (overnight, multi-day) need a separate
+# clearance: IG prices its cash indices from futures at night, so before any
+# multi-day work the engine runs overnight for a week and the night hours are
+# compared too. Multi-day code must refuse instruments that are False here.
+HISTORY_APPROVED_OVERNIGHT = {
     "EURUSD": True,
     "GBPUSD": True,
     "USDJPY": True,

@@ -178,7 +178,8 @@ def test_two_day_trade_hits_stop_at_night_with_night_slippage_and_funding():
 # --------------------------------------------------------------------------
 # Report and command line (cost-analysis permission)
 # --------------------------------------------------------------------------
-def test_cost_analysis_permission_allows_unapproved_but_keeps_final_check_locked():
+def test_cost_analysis_permission_allows_unapproved_but_keeps_final_check_locked(monkeypatch):
+    monkeypatch.setitem(config.HISTORY_APPROVED_FOR_MODEL, "US500", False)       # as if not approved
     s, e = datetime(2025, 1, 1, tzinfo=UTC), datetime(2025, 2, 1, tzinfo=UTC)
     fetch_data.check_history_access("US500", s, e, fetch_data.PURPOSE_COST_ANALYSIS)
     with pytest.raises(fetch_data.HistoryAccessError):
@@ -201,3 +202,27 @@ def test_cli_report(capsys, monkeypatch):
                  "B. Spreads outside your window x2", "By entry weekday", "today: 1h ATR, same day - buy",
                  "daily ATR, 5 days - sell", "Saved to"):
         assert part in out, part
+
+
+def test_cost_vs_move():
+    t = pd.DataFrame({"result_r": [1.0, -1.0, 1.0, -1.0], "spread_r": 0.05, "slippage_r": 0.01, "funding_r": 0.04})
+    m = bt.cost_vs_move(t)
+    assert m["cost_r"] == pytest.approx(0.10)
+    assert m["sd_r"] == pytest.approx(np.std([1, -1, 1, -1], ddof=1))
+    assert m["cost_sd"] == pytest.approx(0.10 / m["sd_r"])
+    assert m["trades_to_see"] == pytest.approx((2 / m["cost_sd"]) ** 2)
+
+
+def test_index_report_says_points(capsys, monkeypatch):
+    hist = random_bars(market_minutes("2025-02-03", 33), seed=4)
+    hist[[c for c in hist.columns if c.startswith(("bid_", "offer_"))]] *= 5000      # an index-like price
+    hist["spread_mean"] = 0.5
+    tt = pd.to_datetime(hist["time_utc"], utc=True)
+    for (y, m), part in hist.groupby([tt.dt.year, tt.dt.month]):
+        fetch_data.write_parquet_atomic(part.reset_index(drop=True), fetch_data.history_bar_file("US500", y, m))
+    record_ig("US500", range(13, 19), 0.4)
+    monkeypatch.setattr(bt.timeutils, "configure_logging", lambda **kw: None)
+    assert bt.main(["costs", "--instrument", "US500"]) == 0
+    out = capsys.readouterr().out
+    assert "(pts)" in out and "(pips)" not in out and "Spread used by UTC hour (points" in out
+    assert "A2. Cost relative to the typical move" in out and "trades to see" in out

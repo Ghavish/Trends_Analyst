@@ -15,11 +15,11 @@ stop, tell you, confirm, then build.
 
 | Idea | Trigger | Reached? |
 |---|---|---|
-| 2 · Opening-range features (indices) | Phase 2: the baseline walk-forward run works **and** the indices are cleared for training by the Dukascopy-vs-IG comparison | No (no walk-forward run yet; indices not cleared) |
+| 2 · Opening-range features (indices) | Phase 2: the baseline walk-forward run works **and** the indices are cleared for training by the Dukascopy-vs-IG comparison | **Formally reached 22 Nov 2026** (EUR/USD walk-forward runs; indices cleared for your window). Raised with you; **not built** until you confirm |
 | 1 · Risk checks (`risk.py`) | End of Phase 2: the engine's filter step (plan Section 8, step 4) is about to be built, before the first live signal | No |
 | 3 · Reality check on trade cards | Start of Phase 3: trade cards are live on demo in signals-only mode | No |
 
-Last checked: 16 November 2026, at the cost report. No trigger reached: the indices are not cleared.
+Last checked: 22 November 2026, after clearing the indices for your window. Idea 2's trigger is formally reached: raised, waiting for your decision. Ideas 1 and 3: not reached.
 
 ---
 
