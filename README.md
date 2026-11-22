@@ -13,6 +13,12 @@ Any change to how the model is built, judged or traded after test results
 have been seen is recorded in [METHOD_CHANGES.md](METHOD_CHANGES.md), with
 the reason, so the number of attempts stays visible.
 
+## Proposal under discussion
+
+[PROPOSAL_PHASE_2B.md](PROPOSAL_PHASE_2B.md): one decision per instrument
+per day, held about a day (from the cost reports of 22 Nov 2026). Not built;
+it needs your decisions and a plan update first.
+
 ## Pending ideas
 
 Three candidate ideas (opening-range features, risk checks in one place, a
@@ -268,7 +274,7 @@ Every entry 17:00-20:00 MUT taken as a buy and as a sell, under today's rule
 stop size, outcomes, costs in R (spread, stop slippage, overnight funding),
 the break-even TP share and the actual one, and the no-model average R with
 a 95% interval; then the same with night spreads doubled, and results by
-entry weekday, and the cost relative to the typical move (cost per trade / spread of results, and how many trades it takes to see an edge that size). Spreads come from your IG recordings (night hours estimated
+entry weekday, and the cost relative to the typical move (cost per trade / spread of results, and how many independent decisions - one per instrument per day - and years it takes to see an edge that size). Spreads come from your IG recordings (night hours estimated
 until the engine has recorded them). Funding and slippage settings are in
 `config.py` ("Cost report"). US 500 and Germany 40 work the same way once
 downloaded (`--instrument US500` / `GER40`); their funding is provisional.

@@ -205,8 +205,11 @@ def test_cli_report(capsys, monkeypatch):
 
 
 def test_cost_vs_move():
-    t = pd.DataFrame({"result_r": [1.0, -1.0, 1.0, -1.0], "spread_r": 0.05, "slippage_r": 0.01, "funding_r": 0.04})
+    t = pd.DataFrame({"result_r": [1.0, -1.0, 1.0, -1.0], "spread_r": 0.05, "slippage_r": 0.01, "funding_r": 0.04,
+                      "day": pd.to_datetime(["2025-01-01", "2025-01-01", "2025-07-02", "2026-01-01"])})
     m = bt.cost_vs_move(t)
+    assert m["days_per_year"] == pytest.approx(3 / 1.0, rel=0.01)          # 3 decision days in one year
+    assert m["years_to_see"] == pytest.approx(m["trades_to_see"] / m["days_per_year"])
     assert m["cost_r"] == pytest.approx(0.10)
     assert m["sd_r"] == pytest.approx(np.std([1, -1, 1, -1], ddof=1))
     assert m["cost_sd"] == pytest.approx(0.10 / m["sd_r"])
@@ -225,4 +228,4 @@ def test_index_report_says_points(capsys, monkeypatch):
     assert bt.main(["costs", "--instrument", "US500"]) == 0
     out = capsys.readouterr().out
     assert "(pts)" in out and "(pips)" not in out and "Spread used by UTC hour (points" in out
-    assert "A2. Cost relative to the typical move" in out and "trades to see" in out
+    assert "A2. Cost relative to the typical move" in out and "decisions to see" in out and "years" in out

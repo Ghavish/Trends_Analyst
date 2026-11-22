@@ -353,15 +353,22 @@ def cost_vs_move(trades: pd.DataFrame) -> dict:
     Cost relative to the typical move: the total cost per trade (spread +
     slippage + funding, in R) divided by the standard deviation of trade
     results (how much a trade's result typically varies). The smaller it is,
-    the less predictive skill is needed to overcome the costs. 'trades to
-    see' = how many independent trades it takes before an edge as big as the
-    costs stands 2 standard errors clear of zero: (2 / ratio) squared.
+    the less predictive skill is needed to overcome the costs.
+    'decisions to see' = how many INDEPENDENT decisions it takes before an
+    edge as big as the costs stands 2 standard errors clear of zero:
+    (2 / ratio) squared. Entries on the same evening share most of their price
+    path, so one decision per instrument per trading day is counted, and
+    'years' = decisions to see / decision days per year in the data.
     """
     cost = float((trades["spread_r"] + trades["slippage_r"] + trades["funding_r"]).mean())
     sd = float(trades["result_r"].std())
     ratio = cost / sd if sd > 0 else np.nan
-    return {"cost_r": cost, "sd_r": sd, "cost_sd": ratio,
-            "trades_to_see": (2 / ratio) ** 2 if ratio and ratio > 0 else np.nan}
+    need = (2 / ratio) ** 2 if ratio and ratio > 0 else np.nan
+    days = pd.to_datetime(trades["day"])
+    span_years = (days.max() - days.min()).days / 365.25 if len(days) else 0
+    per_year = days.nunique() / span_years if span_years > 0 else np.nan
+    return {"cost_r": cost, "sd_r": sd, "cost_sd": ratio, "trades_to_see": need,
+            "days_per_year": per_year, "years_to_see": need / per_year if per_year else np.nan}
 
 
 def run_costs(b1: pd.DataFrame, instrument: str, night_multiple: float = 1.0, scenarios=None):
@@ -399,7 +406,7 @@ def _move_row(label: str, s: dict) -> str:
     if s.get("n", 0) == 0:
         return f"  {label:<32} no trades"
     return (f"  {label:<32} {s['cost_r']:>9.3f} {s['sd_r']:>9.3f} {s['cost_sd']:>9.3f} "
-            f"{s['trades_to_see']:>12,.0f}")
+            f"{s['trades_to_see']:>12,.0f} {s['years_to_see']:>9.1f}")
 
 
 def cost_report(instrument: str, b1: pd.DataFrame) -> list[str]:
@@ -438,9 +445,11 @@ def cost_report(instrument: str, b1: pd.DataFrame) -> list[str]:
         lines.append("")
         lines.append(f"{'A' if mult == 1.0 else 'B'}2. Cost relative to the typical move (smaller = less skill needed)")
         lines.append("   cost = spread + slippage + funding per trade; sd = standard deviation of trade results;")
-        lines.append("   'trades to see' = independent trades needed before an edge as large as the costs")
-        lines.append("   stands 2 standard errors clear of zero, (2 / (cost/sd)) squared.")
-        lines.append(f"  {'rule / side':<32} {'cost (R)':>9} {'sd (R)':>9} {'cost/sd':>9} {'trades to see':>12}")
+        lines.append("   'decisions to see' = independent decisions needed before an edge as large as the costs")
+        lines.append("   stands 2 standard errors clear of zero, (2 / (cost/sd)) squared; one decision per")
+        lines.append("   instrument per trading day (same-evening entries share their price path), so")
+        lines.append("   'years' = decisions / decision days per year (about 240 here), for ONE instrument.")
+        lines.append(f"  {'rule / side':<32} {'cost (R)':>9} {'sd (R)':>9} {'cost/sd':>9} {'decisions':>12} {'years':>9}")
         for (name, side), sm in sums.items():
             lines.append(_move_row(f"{name} - {side}", sm))
         lines.append("")
