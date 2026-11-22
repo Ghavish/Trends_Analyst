@@ -247,9 +247,14 @@ CHUNK = 300
 
 
 def simulate(b1: pd.DataFrame, cand: pd.DataFrame, instrument: str, spread_min: np.ndarray,
-             slip_min: np.ndarray, max_gap_minutes: int) -> tuple[pd.DataFrame, int]:
+             slip_min: np.ndarray, max_gap_minutes: int,
+             exit_after_close: bool = False) -> tuple[pd.DataFrame, int]:
     """Every candidate as a buy and a sell. Returns one row per (entry, side) and
-    the number of entries dropped because the data had a gap during the trade."""
+    the number of entries dropped because the data had a gap during the trade.
+    exit_after_close=True (daily decisions): a trade still open at its close-by
+    time exits at the OPEN of the first minute at or after it - if the market
+    is shut then, the first tradable price after it reopens, so gaps count;
+    gaps inside the trade are then allowed up to max_gap_minutes."""
     m = ft.mid(b1)
     t = ft.ns(b1.index)
     mo, mh, ml, mc = (m[c].to_numpy() for c in ("open", "high", "low", "close"))
@@ -274,7 +279,11 @@ def simulate(b1: pd.DataFrame, cand: pd.DataFrame, instrument: str, spread_min: 
         last_j = np.maximum(valid.sum(axis=1) - 1, 0)
         rws = np.arange(len(c))
         last_t = tt[rws, last_j]
-        broken |= (cb - last_t) > gap_ns
+        if exit_after_close:
+            end_c = np.minimum(end, n - 1)
+            broken |= (end >= n) | ((t[end_c] - cb) > gap_ns)   # no price soon enough after the close time
+        else:
+            broken |= (cb - last_t) > gap_ns
         sl_d, tp_d = c["sl_dist"].to_numpy(), c["tp_dist"].to_numpy()
         s_path = spread_min[idx]
         for side in SIDES:
@@ -298,9 +307,24 @@ def simulate(b1: pd.DataFrame, cand: pd.DataFrame, instrument: str, spread_min: 
             open_exit = mo[ix] - sign * s_x / 2
             gapped = (open_exit < sl) if side == "buy" else (open_exit > sl)
             sl_fill = np.where(gapped, open_exit, sl) - sign * slip_min[ix]
-            timeout_px = mc[ix] - sign * s_x / 2
+            if exit_after_close:
+                s_end = spread_min[end_c]
+                timeout_px = mo[end_c] - sign * s_end / 2      # first tradable price at/after close-by
+                timeout_ns = t[end_c]
+                # Market shut at the close time and reopening beyond a level: the order at IG
+                # acts at the reopening price (stop: that price minus slippage; take profit: its level).
+                open_sl = ~(is_sl | is_tp) & ((timeout_px <= sl) if side == "buy" else (timeout_px >= sl))
+                open_tp = ~(is_sl | is_tp) & ((timeout_px >= tp) if side == "buy" else (timeout_px <= tp))
+                sl_fill = np.where(open_sl, timeout_px - sign * slip_min[end_c], sl_fill)
+                is_sl, is_tp = is_sl | open_sl, is_tp | open_tp
+                ix = np.where(open_sl | open_tp, end_c, ix)
+                s_x = np.where(open_sl | open_tp, s_end, s_x)
+                s_x = np.where(is_sl | is_tp, s_x, s_end)
+            else:
+                timeout_px = mc[ix] - sign * s_x / 2
+                timeout_ns = cb
             exit_px = np.where(is_sl, sl_fill, np.where(is_tp, tp, timeout_px))
-            exit_ns = np.where(is_sl | is_tp, t[ix], cb)
+            exit_ns = np.where(is_sl | is_tp, t[ix], timeout_ns)
             nights = nights_held(e_ns, exit_ns, roll_ns, roll_w)
             fcost = funding_cost(instrument, side, nights, mo[pos])
             gross_r = sign * (exit_px - entry) / sl_d

@@ -200,3 +200,28 @@ below, this line of work stops; no variants are tried afterwards.
      above 0 with any one instrument removed;
    - (e) when the portfolio limits allow fewer positions than signals, the
      highest-EV signals are taken (fixed in advance).
+
+### Confirmations of 22 November 2026 (also fixed before any results)
+
+- 17:15 MUT is 13:15 UTC all year (Mauritius has no daylight saving).
+- Period rules as shares: "most periods" = **62.5%** (10 of 16); a feature
+  group is kept if it lowers test log loss in **75%** of periods (12 of 16);
+  the pass needs average R positive in **62.5%** of test periods.
+- The log-loss baseline is a **constant win rate per instrument and
+  direction**. "Entirely below" (stop rule 5a) means the day-resampled 95%
+  interval of the difference, model minus baseline, lies below 0. Both
+  baselines are fixed from the data before each test period (training +
+  calibration, after the 1-day gaps), as the model sees it.
+- No new positions on holiday and year-end days (24 Dec - 1 Jan).
+- When the market is shut at the close time, the trade exits at the **first
+  tradable price after it reopens**, so gaps are counted (a stop or take
+  profit passed by the reopening price acts there).
+- A position kept because the new decision is in the same direction gets
+  the stop and take profit a fresh trade would get (today's price +- 1 x /
+  3 x today's daily ATR), so kept trades follow the labels' rules.
+- Walk-forward layout as proposed: tests from July 2018 in 6-month periods,
+  expanding training, 6-month calibration, 1 trading day gaps.
+- To fix before any model results: LightGBM settings sized for daily data
+  (about 720 rows for EUR/USD alone at the start, about 3,600 pooled), and
+  the daily features' warm-up (about 5 months), so the first usable training
+  rows start in mid-2015.

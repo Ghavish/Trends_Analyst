@@ -15,11 +15,11 @@ stop, tell you, confirm, then build.
 
 | Idea | Trigger | Reached? |
 |---|---|---|
-| 2 · Opening-range features (indices) | Phase 2: the baseline walk-forward run works **and** the indices are cleared for training by the Dukascopy-vs-IG comparison | **Formally reached 22 Nov 2026**; raised with you and **postponed** (your decision) until the new phase (PROPOSAL_PHASE_2B.md) is decided. Not built |
+| 2 · Opening-range features (indices) | Phase 2: the baseline walk-forward run works **and** the indices are cleared for training by the Dukascopy-vs-IG comparison | **Formally reached 22 Nov 2026**; raised with you and **postponed** (your decision); Phase 2B was then adopted (22 Nov), Idea 2 stays postponed until you raise it again. Not built |
 | 1 · Risk checks (`risk.py`) | End of Phase 2: the engine's filter step (plan Section 8, step 4) is about to be built, before the first live signal | No |
 | 3 · Reality check on trade cards | Start of Phase 3: trade cards are live on demo in signals-only mode | No |
 
-Last checked: 22 November 2026. Idea 2: reached, postponed by you until the new phase is decided. Ideas 1 and 3: not reached.
+Last checked: 22 November 2026, start of step 2B-1 (daily labels). Idea 2: reached, postponed by you. Ideas 1 and 3: not reached (no engine filter step or live signals yet).
 
 ---
 

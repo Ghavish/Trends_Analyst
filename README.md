@@ -16,8 +16,9 @@ the reason, so the number of attempts stays visible.
 ## Proposal under discussion
 
 [PROPOSAL_PHASE_2B.md](PROPOSAL_PHASE_2B.md): one decision per instrument
-per day, held about a day (from the cost reports of 22 Nov 2026). Not built;
-it needs your decisions and a plan update first.
+per day, held about a day. Adopted as an experiment on 22 Nov 2026 (section 8
+holds the decisions and the stopping rule); the plan PDF's Section 2 needs
+updating to match. Step 2B-1 (daily labels and baselines) is built.
 
 ## Pending ideas
 
@@ -36,7 +37,7 @@ reached and confirmed.
 | `db.py` | The only file that talks to SQLite |
 | `fetch_data.py` | Records the live IG feed; downloads Dukascopy history; the final-check lock |
 | `features.py` | Bars, ATR, no-lookahead alignment, the ATR report, and the model's 46 features in three groups (base, candles, 1-hour trend) |
-| `labels.py` | Triple-barrier labels (buy and sell) for every entry in your window; label report |
+| `labels.py` | Triple-barrier labels (buy and sell) for every entry in your window; daily-decision labels and baselines (Phase 2B); label reports |
 | `train.py` | Walk-forward training and testing: LightGBM per direction, Platt calibration, variants A-D, full report |
 | `backtest.py` | Cost report (no model): every entry under several holding rules, with spreads, slippage and overnight funding; full backtest later |
 | `signals.py` | The engine (background process) |
@@ -226,6 +227,28 @@ TP and SL in the same minute counts as SL. No entries on 24 Dec - 1 Jan,
 NYSE / London holidays or NYSE early-close days, in the first hour after a
 gap, or across a data gap. Saved to `data\datasets\EURUSD_labels_v1.parquet`
 with its settings in a `.json` file next to it. All settings are in `config.py`.
+
+## Daily-decision labels (Phase 2B)
+
+```powershell
+python labels.py daily-build --instrument EURUSD --save   # labels + report
+python labels.py daily-report --instrument EURUSD         # the report again
+```
+
+One decision per weekday Monday-Thursday at 17:15 MUT (13:15 UTC): a buy and,
+separately, a sell, held to the next weekday's 17:15 MUT (Thursday's close on
+Friday), with a stop at 1 x and a take profit at 3 x the daily ATR(14) from
+completed trading days (17:00 New York). Win = result in R after spread,
+stop slippage and overnight funding above 0. Exits are checked on 1-minute
+bars, overnight too; if the market is shut at the close time, the trade exits
+at the first price after it reopens (a stop or take profit passed by the
+reopening price acts there). No decisions on holidays and 24 Dec - 1 Jan.
+The report shows the no-model results per direction, by year and weekday,
+and the two baselines the model must beat in each walk-forward test period
+(the same-direction rule, and a constant win rate per direction for log
+loss), both fixed from the data before the test period. Only instruments
+cleared for overnight holding (`config.HISTORY_APPROVED_OVERNIGHT`) are
+accepted. Saved to `data\datasets\EURUSD_daily_labels_v1.parquet` + `.json`.
 
 ## Features
 

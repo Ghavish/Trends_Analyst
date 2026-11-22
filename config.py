@@ -423,6 +423,26 @@ COST_NIGHT_SPREAD_MULTIPLE = 2.0      # the second set of results: spreads outsi
 COST_MIN_RECORDED_MINUTES = 30        # an hour's recorded IG spread is used only with this many minutes
 
 # --------------------------------------------------------------------------
+# Phase 2B: one decision per instrument per day (decided 22 Nov 2026, fixed
+# before any results; PROPOSAL_PHASE_2B.md section 8)
+# --------------------------------------------------------------------------
+DAILY_DECISION_MUT = (17, 15)            # 17:15 MUT = 13:15 UTC all year
+DAILY_ENTRY_WEEKDAYS = (0, 1, 2, 3)      # Monday-Thursday; Friday only closes Thursday's positions
+DAILY_SL_ATR = 1.0                       # protective stop: 1 x daily ATR(14)
+DAILY_TP_ATR = 3.0                       # take profit: 3 x daily ATR(14) (every order carries both)
+# A position is closed at the next weekday's decision time (also on a holiday);
+# if the market is shut then, at the first tradable price after it reopens, so
+# gaps are counted. Gaps inside a trade are allowed up to this length.
+DAILY_MAX_GAP_MINUTES = 4 * 24 * 60
+# Walk-forward with history from 2015: first test period July-December 2018,
+# then 6-month periods to the end of the development period (about 16).
+DAILY_WF_FIRST_TEST_START = datetime(2018, 7, 1, tzinfo=timezone.utc)
+# Period rules as shares (decided 22 Nov 2026):
+DAILY_MOST_PERIODS_SHARE = 0.625         # "most periods" (10 of 16)
+DAILY_GROUP_KEEP_SHARE = 0.75            # a feature group is kept (12 of 16)
+DAILY_PASS_POSITIVE_SHARE = 0.625        # pass: positive average R in at least this share
+
+# --------------------------------------------------------------------------
 # Walk-forward training (train.py) - decided 15 Nov 2026, fixed, not tuned
 # --------------------------------------------------------------------------
 # Expanding training window from the start of the history; then a 6-month

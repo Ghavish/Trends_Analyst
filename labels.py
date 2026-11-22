@@ -28,6 +28,7 @@ after the entry is used only to find the outcome (that is what a label is).
 
     python labels.py build      # EUR/USD, all development history -> data/datasets/
     python labels.py report     # outcome rates by entry hour and year, skipped entries
+    python labels.py daily-build --instrument EURUSD   # Phase 2B daily-decision labels + report
 """
 
 from __future__ import annotations
@@ -274,28 +275,241 @@ def report(instrument: str) -> list[str]:
     return lines
 
 
+# ==========================================================================
+# Phase 2B: one decision per instrument per day (PROPOSAL_PHASE_2B.md, section 8)
+# ==========================================================================
+# Each weekday Monday-Thursday at 17:15 MUT: a buy and, separately, a sell,
+# held to the next weekday's decision time with a protective stop at 1 x daily
+# ATR(14) and a take profit at 3 x daily ATR(14). label (win) = 1 if the
+# result in R after spread, slippage and funding is above 0. Exits are checked
+# on 1-minute bars by backtest.simulate (night spreads and slippage, funding
+# per rollover); a trade open at the close time exits at the first tradable
+# price at or after it, so gaps count. Daily ATR uses completed trading days
+# (17:00 New York) only.
+DAILY_LABELS_VERSION = 1
+
+
+def daily_label_file(instrument: str) -> Path:
+    return config.DATASETS_DIR / f"{instrument}_daily_labels_v{DAILY_LABELS_VERSION}.parquet"
+
+
+def daily_close_by(entries) -> pd.DatetimeIndex:
+    """The next weekday's decision time (also on a holiday), as UTC."""
+    mut = pd.DatetimeIndex(entries).tz_convert(config.TZ_MAURITIUS)
+    d = mut.tz_localize(None).normalize().to_numpy().astype("datetime64[D]")
+    nxt = np.busday_offset(d, 1, roll="forward")
+    h, m = config.DAILY_DECISION_MUT
+    return (pd.DatetimeIndex(nxt).tz_localize(config.TZ_MAURITIUS)
+            + pd.Timedelta(hours=h, minutes=m)).tz_convert("UTC")
+
+
+def daily_settings(instrument: str) -> dict:
+    return {"daily_labels_version": DAILY_LABELS_VERSION, "instrument": instrument,
+            "decision_mut": config.DAILY_DECISION_MUT, "entry_weekdays": config.DAILY_ENTRY_WEEKDAYS,
+            "sl_atr": config.DAILY_SL_ATR, "tp_atr": config.DAILY_TP_ATR, "atr_bars": config.ATR_BARS,
+            "max_gap_minutes": config.DAILY_MAX_GAP_MINUTES, "funding": config.FUNDING[instrument],
+            "slippage": config.COST_SLIPPAGE[instrument]}
+
+
+def build_daily_labels(b1: pd.DataFrame, instrument: str) -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+    """(one row per decision with buy_/sell_ columns, skipped counts, spread table).
+    b1: 1-minute bars indexed by start (features.to_indexed)."""
+    import backtest as bt
+    table = bt.spread_table(instrument, b1)
+    spread_min = bt.spread_per_minute(b1, table)
+    slip_min = bt.slippage_per_minute(instrument, b1)
+    minutes = config.DECISION_BAR_MINUTES
+    base = ft.resample_bars(b1, minutes)
+    entry = base.index + pd.Timedelta(minutes=minutes)
+    mut = entry.tz_convert(config.TZ_MAURITIUS)
+    h, m = config.DAILY_DECISION_MUT
+    at_time = np.asarray((mut.hour == h) & (mut.minute == m) & mut.day_of_week.isin(config.DAILY_ENTRY_WEEKDAYS))
+    holiday = np.zeros(len(base), bool)
+    holiday[at_time] = [timeutils.no_entry_reason(d) is not None for d in mut.date[at_time]]
+    atr_d = bt.atr_at_decision(b1, base.index, "D")
+    has_price = np.asarray(entry.isin(b1.index))
+    keep, skipped = at_time.copy(), {}
+    for name, bad in (("holiday or year-end", holiday), ("daily ATR not available yet", np.isnan(atr_d)),
+                      ("no price at the decision minute", ~has_price)):
+        skipped[name] = int((keep & bad).sum())
+        keep &= ~bad
+    e = entry[keep]
+    a = atr_d[keep]
+    pos = np.searchsorted(ft.ns(b1.index), ft.ns(e))
+    cand = pd.DataFrame({"entry_utc": e, "close_by_utc": daily_close_by(e), "atr": a,
+                         "sl_dist": config.DAILY_SL_ATR * a, "tp_dist": config.DAILY_TP_ATR * a,
+                         "floor_applied": False, "spread_entry": spread_min[pos]})
+    trades, dropped = bt.simulate(b1, cand, instrument, spread_min, slip_min, config.DAILY_MAX_GAP_MINUTES,
+                                  exit_after_close=True)
+    skipped["no price after the close time"] = dropped
+    if len(trades) == 0:
+        return pd.DataFrame(), skipped, table
+    trades["win"] = (trades["result_r"] > 0).astype(np.int8)
+    cols = ["outcome", "result_r", "win", "spread_r", "slippage_r", "funding_r", "nights", "hours_held"]
+    wide = trades.pivot(index="entry_utc", columns="side", values=cols)
+    wide.columns = [f"{side}_{c}" for c, side in wide.columns]
+    wide = wide.reset_index()
+    info = cand.set_index("entry_utc").loc[wide["entry_utc"]]
+    wide["close_by_utc"] = info["close_by_utc"].to_numpy()
+    wide["atr_d"] = info["atr"].to_numpy()
+    wide["sl_dist"] = info["sl_dist"].to_numpy()
+    wide["decision_bar_utc"] = pd.to_datetime(wide["entry_utc"], utc=True) - pd.Timedelta(minutes=minutes)
+    wide["day"] = pd.to_datetime(wide["entry_utc"], utc=True).dt.tz_convert(None).dt.normalize()
+    for side in SIDES:
+        wide[f"{side}_win"] = wide[f"{side}_win"].astype(np.int8)
+        for c in ("result_r", "spread_r", "slippage_r", "funding_r", "nights", "hours_held"):
+            wide[f"{side}_{c}"] = wide[f"{side}_{c}"].astype(float)
+    return wide.sort_values("entry_utc").reset_index(drop=True), skipped, table
+
+
+def daily_build_and_save(instrument: str) -> dict:
+    if not config.HISTORY_APPROVED_OVERNIGHT.get(instrument, False):
+        raise fetch_data.HistoryAccessError(
+            f"{instrument} is not cleared for overnight holding yet (config.HISTORY_APPROVED_OVERNIGHT): "
+            "a week of overnight recording and a night-hours comparison come first")
+    start, end = config.HISTORY_START_UTC, fetch_data.development_end_utc()
+    bars = fetch_data.load_history_1m(instrument, start, end, fetch_data.PURPOSE_DEVELOPMENT)
+    wide, skipped, _ = build_daily_labels(ft.to_indexed(bars), instrument)
+    path = daily_label_file(instrument)
+    fetch_data.write_parquet_atomic(wide, path, compression="zstd")
+    meta = {"settings": daily_settings(instrument), "start_utc": start.isoformat(), "end_utc": end.isoformat(),
+            "rows": len(wide), "skipped": skipped, "created_utc": timeutils.now_utc().isoformat()}
+    path.with_suffix(".json").write_text(json.dumps(meta, indent=2, default=list), encoding="utf-8")
+    return meta
+
+
+def daily_rounds():
+    import train as tr
+    return tr.schedule(pd.Timestamp(fetch_data.development_end_utc()), config.DAILY_WF_FIRST_TEST_START,
+                       config.WF_PERIOD_MONTHS)
+
+
+def daily_baselines(df: pd.DataFrame, rounds=None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The two bars the model must clear, per walk-forward test period, both
+    fixed from the data before the test period (training + calibration, after
+    the 1-day gaps), as the model sees it:
+    - same direction: always trade the direction with the higher average R
+      before the test period; its test results (periods, and the trades for the
+      day-resampled interval);
+    - log loss: a constant win probability per direction = the win rate before
+      the test period; its test log loss.
+    df: daily labels with a 'day' column (one instrument)."""
+    import train as tr
+    rows, parts = [], []
+    for rnd in rounds or daily_rounds():
+        train_rows, cal, test = tr.split(df, rnd)
+        before = pd.concat([train_rows, cal])
+        if len(test) == 0 or len(before) == 0:
+            continue
+        side = "buy" if before["buy_result_r"].mean() >= before["sell_result_r"].mean() else "sell"
+        other = "sell" if side == "buy" else "buy"
+        row = {"round": rnd.number, "period": rnd.label(), "side": side, "decisions": len(test),
+               "avg_r": float(test[f"{side}_result_r"].mean()),
+               "other_avg_r": float(test[f"{other}_result_r"].mean())}
+        for s_ in SIDES:
+            rate = float(before[f"{s_}_win"].mean())
+            row[f"{s_}_base_rate"] = rate
+            row[f"{s_}_base_log_loss"] = tr.log_loss(test[f"{s_}_win"].to_numpy(), np.full(len(test), rate))
+        rows.append(row)
+        parts.append(pd.DataFrame({"round": rnd.number, "day": test["day"].to_numpy(), "side": side,
+                                   "result_r": test[f"{side}_result_r"].to_numpy()}))
+    trades = (pd.concat(parts, ignore_index=True) if parts
+              else pd.DataFrame(columns=["round", "day", "side", "result_r"]))
+    return pd.DataFrame(rows), trades
+
+
+def daily_report(instrument: str) -> list[str]:
+    import backtest as bt
+    import train as tr
+    path = daily_label_file(instrument)
+    if not path.exists():
+        return [f"No daily labels yet: run  python labels.py daily-build --instrument {instrument}"]
+    df = pd.read_parquet(path)
+    meta = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+    unit = "pips" if instrument in config.PIP_SIZE else "points"
+    p = config.PIP_SIZE.get(instrument, 1.0)
+    days = pd.to_datetime(df["day"])
+    h, m = config.DAILY_DECISION_MUT
+    lines = [f"Daily labels: {instrument}, {days.min():%Y-%m-%d} to {days.max():%Y-%m-%d}, {len(df):,} decisions "
+             f"(Monday-Thursday {h:02d}:{m:02d} MUT), made {meta['created_utc'][:16]} UTC",
+             f"Held to the next weekday's {h:02d}:{m:02d} MUT; stop {config.DAILY_SL_ATR:g} x / take profit "
+             f"{config.DAILY_TP_ATR:g} x daily ATR(14); win = result after spread, slippage and funding above 0.",
+             f"Stop distance ({unit}): median {df['sl_dist'].median() / p:.1f}, 10% {df['sl_dist'].quantile(0.1) / p:.1f}, "
+             f"90% {df['sl_dist'].quantile(0.9) / p:.1f}.  Decisions per year: "
+             f"{days.dt.normalize().nunique() / max((days.max() - days.min()).days / 365.25, 1e-9):.0f}", ""]
+    lines.append("No model, every decision taken (both directions):")
+    for side in SIDES:
+        t = pd.DataFrame({"day": df["day"], "result_r": df[f"{side}_result_r"],
+                          "spread_r": df[f"{side}_spread_r"], "slippage_r": df[f"{side}_slippage_r"],
+                          "funding_r": df[f"{side}_funding_r"]})
+        lo, hi = tr.bootstrap_mean_r(t)
+        mv = bt.cost_vs_move(t)
+        o = df[f"{side}_outcome"].value_counts(normalize=True)
+        lines.append(f"  {side.upper():<4} win {100 * df[f'{side}_win'].mean():5.1f}%  avg {t['result_r'].mean():+.3f} R "
+                     f"[{lo:+.3f}, {hi:+.3f}]  TP/SL/timeout {100 * o.get('TP', 0):.0f}/{100 * o.get('SL', 0):.0f}/"
+                     f"{100 * o.get('TIMEOUT', 0):.0f}%  held {df[f'{side}_hours_held'].mean():.1f} h  "
+                     f"nights {df[f'{side}_nights'].mean():.2f}")
+        lines.append(f"       costs per trade: spread {t['spread_r'].mean():.3f}  slippage {t['slippage_r'].mean():.3f}  "
+                     f"funding {t['funding_r'].mean():.3f}  = {mv['cost_r']:.3f} R; sd {mv['sd_r']:.3f}; "
+                     f"cost/sd {mv['cost_sd']:.3f}")
+    lines += ["", "By year (decisions, buy avg R, sell avg R):"]
+    for y, g in df.groupby(days.dt.year):
+        lines.append(f"  {y}: {len(g):>4}  buy {g['buy_result_r'].mean():+.3f}  sell {g['sell_result_r'].mean():+.3f}")
+    lines += ["", "By decision weekday (buy | sell avg R; Wednesday holds pay the triple-night funding for forex):"]
+    wd = pd.to_datetime(df["entry_utc"], utc=True).dt.tz_convert(config.TZ_MAURITIUS).dt.day_of_week
+    for d, g in df.groupby(wd):
+        lines.append(f"  {('Mon', 'Tue', 'Wed', 'Thu', 'Fri')[d]}: {len(g):>4}  {g['buy_result_r'].mean():+.3f} | "
+                     f"{g['sell_result_r'].mean():+.3f}")
+    base, bt_trades = daily_baselines(df)
+    lines += ["", "Baselines the model must beat, per walk-forward test period (fixed from the data before it:",
+              "training + calibration, 1-day gaps). Same direction = always trade the direction with the higher",
+              "average R before the period. Log loss = a constant win rate per direction from before the period."]
+    if len(base):
+        for _, r in base.iterrows():
+            lines.append(f"  round {int(r['round']):>2} ({r['period']}): {r['side']:<4} {int(r['decisions']):>4} decisions  "
+                         f"avg {r['avg_r']:+.3f} R (other {r['other_avg_r']:+.3f})   log loss buy "
+                         f"{r['buy_base_log_loss']:.4f} (rate {r['buy_base_rate']:.3f}), sell "
+                         f"{r['sell_base_log_loss']:.4f} (rate {r['sell_base_rate']:.3f})")
+        lo, hi = tr.bootstrap_mean_r(bt_trades)
+        pos = float((base["avg_r"] > 0).mean())
+        lines.append(f"  All test periods: {len(bt_trades):,} decisions, avg {bt_trades['result_r'].mean():+.3f} R "
+                     f"[{lo:+.3f}, {hi:+.3f}], positive in {100 * pos:.0f}% of periods")
+    else:
+        lines.append("  (no complete walk-forward round in the data yet)")
+    lines += ["", "Decisions skipped: " + ", ".join(f"{k}: {v}" for k, v in meta["skipped"].items())]
+    return lines
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Triple-barrier labels.")
+    parser = argparse.ArgumentParser(description="Labels: intraday triple barrier and daily decisions.")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name, text in (("build", "make the labels (development period) and show the report"),
-                       ("report", "show the report for the saved labels")):
+    for name, text in (("build", "intraday labels (development period) and their report"),
+                       ("report", "report for the saved intraday labels"),
+                       ("daily-build", "daily-decision labels (Phase 2B) and their report"),
+                       ("daily-report", "report for the saved daily-decision labels")):
         p = sub.add_parser(name, help=text)
-        p.add_argument("--instrument", default="EURUSD", choices=list(config.IG_SPREAD_PIPS))
+        choices = list(config.IG_SPREAD_PIPS) if name in ("build", "report") else list(config.FUNDING)
+        p.add_argument("--instrument", default="EURUSD", choices=choices)
         p.add_argument("--save", action="store_true", help="also save the report in data/reports/")
     args = parser.parse_args(argv)
-    if args.command == "build":
-        try:
+    daily = args.command.startswith("daily")
+    try:
+        if args.command == "build":
             meta = build_and_save(args.instrument)
-        except fetch_data.HistoryAccessError as exc:
-            print(f"STOPPED: {exc}")
-            return 1
-        print(f"Saved {meta['rows']:,} labels to {label_file(args.instrument)}\n")
-    text = "\n".join(report(args.instrument))
+            print(f"Saved {meta['rows']:,} labels to {label_file(args.instrument)}\n")
+        elif args.command == "daily-build":
+            meta = daily_build_and_save(args.instrument)
+            print(f"Saved {meta['rows']:,} daily decisions to {daily_label_file(args.instrument)}\n")
+    except (fetch_data.HistoryAccessError, ValueError) as exc:
+        print(f"STOPPED: {exc}")
+        return 1
+    text = "\n".join(daily_report(args.instrument) if daily else report(args.instrument))
     print(text)
     if args.save:
         folder = config.DATA_DIR / "reports"
         folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"labels_report_{args.instrument}_{timeutils.now_utc():%Y-%m-%d_%H%M}UTC.txt"
+        kind = "daily_labels_report" if daily else "labels_report"
+        path = folder / f"{kind}_{args.instrument}_{timeutils.now_utc():%Y-%m-%d_%H%M}UTC.txt"
         path.write_text(text + "\n", encoding="utf-8")
         print(f"\nSaved to {path}")
     return 0
